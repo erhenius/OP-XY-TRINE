@@ -1,0 +1,10 @@
+{
+  "format": "opxy-layout/1",
+  "profile": "opxy-1.2.1",
+  "machines": {
+    "m3probe": {
+      "effect": 11,
+      "page": 21
+    }
+  }
+}

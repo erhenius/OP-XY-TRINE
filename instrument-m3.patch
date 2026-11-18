@@ -1,0 +1,860 @@
+diff --git a/sdk/platform/opxy-1.2.1/m3_probe.cpp.in b/sdk/platform/opxy-1.2.1/m3_probe.cpp.in
+new file mode 100644
+index 0000000..2e59376
+--- /dev/null
++++ b/sdk/platform/opxy-1.2.1/m3_probe.cpp.in
+@@ -0,0 +1,154 @@
++// OS 1.2.1 instrument resonator. The stock filter registrar populates
++// the per-voice factory table and its name map, independently of send FX.
++#include "registration.hpp"
++// The FX build carrier has no separate authored source-unit slot.
++#include "resonator.cpp"
++
++using opxy::u32;
++using opxy::i32;
++using opxy::platform::Address;
++using opxy::platform::Record;
++using opxy::platform::at;
++using opxy::platform::stock;
++
++extern "C" {
++extern const char m3probe_fx_id[] __asm__("m3probe_fx_id");
++extern const char m3probe_fx_factory[] __asm__("m3probe_fx_factory");
++extern const char m3probe_fx_parameter_name[] __asm__("m3probe_fx_parameter_name");
++int m3probe_fx_register() __asm__("m3probe_fx_register");
++int m3probe_ready() __asm__("m3probe_ready");
++void m3probe_filter_init(u32, const char*, const char*, const char*, u32)
++    __asm__("m3probe_filter_init");
++}
++
++#include "m3_setup_ui.hpp"
++
++namespace {
++const Address kFilterRecords = 0x08039b2c;
++const u32 kRegisterFilter = 0x8d50673c;
++const u32 kStockSvf = 10;
++const u32 kStockSvfFactory = 0x8d51c058;
++const Address kStockSvfMethods = 0x8405307c;
++const u32 kStockVoiceCount = 128;
++const u32 kStockSlotBytes = 0x90;
++const unsigned kFilterControlOffset = 16;
++const u32 kProbeId = 11;
++const u32 kInstrumentFilterPage = 3;
++const u32 kRecordWords = 12;
++const u32 kNameBytes = 32;
++using m3_resonator::Mode;
++
++using Registrar = void(u32, const char*, const char*, const char*, u32);
++
++const volatile u32* row(u32 id) {
++    return at<const volatile u32>(kFilterRecords) + id * kRecordWords;
++}
++
++unsigned probe_id() { return reinterpret_cast<Address>(m3probe_fx_id); }
++
++bool name_matches(const volatile u32* record, const char* name, u32 size) {
++    const volatile char* field = reinterpret_cast<const volatile char*>(record + 4);
++    for (u32 i = 0; i < kNameBytes; ++i) {
++        if (field[i] != (i < size ? name[i] : 0)) return false;
++    }
++    return true;
++}
++
++bool empty(const volatile u32* record) {
++    for (u32 i = 0; i < kRecordWords; ++i) {
++        if (record[i] != 0) return false;
++    }
++    return true;
++}
++
++struct FilterObject {
++    const void* const* methods;
++    m3_resonator::Voice voice;
++};
++
++static_assert(sizeof(FilterObject) <= kStockSlotBytes, "Resonator exceeds stock filter slot");
++m3_resonator::Coefficients caches[2] = {};
++
++m3_resonator::Coefficients& cache_for(const FilterObject* object) {
++    return caches[static_cast<unsigned>(object->voice.mode)];
++}
++
++m3_resonator::Parameters read_controls(const i32* track) {
++    // The stock SVF consumes these same four M3 track words.
++    const i32* controls = track + kFilterControlOffset;
++    return {{controls[0], controls[1], controls[2], controls[3]}};
++}
++
++m3_resonator::Excitation voices[kStockVoiceCount];
++unsigned voice_slot(const FilterObject* o) {
++    return (reinterpret_cast<Address>(o) - 0x84c6239c) / kStockSlotBytes;
++}
++void audio_block(FilterObject* o, i32* block, const i32* track, i32 key, bool stereo) {
++    const unsigned slot = voice_slot(o);
++    if (slot >= kStockVoiceCount) return;
++    const Address offset = reinterpret_cast<Address>(track) - 0x84eab39c;
++    const unsigned track_number = offset / 0xe8;
++    const unsigned word = track_number < 8 && offset % 0xe8 == 0 ? m3_ui::audio[track_number] : 0;
++    m3_resonator::perform(o->voice, cache_for(o), read_controls(track), block, voices[slot],
++                          m3_resonator::unpack(word), stereo, m3_resonator::played_note(key));
++}
++void mono(FilterObject* o, i32* block, const i32* track, i32 key, i32) { audio_block(o, block, track, key, false); }
++void stereo(FilterObject* o, i32* block, const i32* track, i32 key, i32) { audio_block(o, block, track, key, true); }
++void reset(FilterObject* o, u32) {
++    const unsigned slot = voice_slot(o);
++    if (slot < kStockVoiceCount) voices[slot] = {};
++    m3_resonator::reset(o->voice);
++}
++
++// Retain the stock SVF's untouched entries. Only the voice processing and
++// reset entries use the new state in the same pool slot.
++const void* const kResonatorMethods[10] = {
++    reinterpret_cast<const void*>(0x8d51c0c2), reinterpret_cast<const void*>(0x8d51c0d8),
++    reinterpret_cast<const void*>(&mono), reinterpret_cast<const void*>(&stereo),
++    reinterpret_cast<const void*>(0x8d5006a4), reinterpret_cast<const void*>(&reset),
++    reinterpret_cast<const void*>(0x8d51bc20), reinterpret_cast<const void*>(0x8d500684),
++    nullptr, nullptr
++};
++
++void* resonator_factory(u32 index, u32 track) {
++    if (index >= kStockVoiceCount) return nullptr;
++    auto object = stock<FilterObject*(u32, u32)>(kStockSvfFactory)(index, track);
++    if (object && object->methods == at<const void* const>(kStockSvfMethods)) {
++        object->methods = kResonatorMethods;
++        reset(object, 0);
++    }
++    return object;
++}
++
++const char kFilterName[] = "trine";
++}
++
++int m3probe_ready() {
++    const volatile u32* svf = row(kStockSvf);
++    const volatile u32* probe = row(kProbeId);
++    return probe_id() == kProbeId && svf[0] == kStockSvfFactory &&
++           probe[0] == reinterpret_cast<Address>(resonator_factory) &&
++           probe[1] == reinterpret_cast<Address>(m3probe_fx_parameter_name) &&
++           probe[3] == svf[3] && name_matches(probe, kFilterName, sizeof(kFilterName)-1);
++}
++
++int m3probe_fx_register() {
++    if (probe_id() != kProbeId) return 0;
++    const Record record = {m3probe_fx_factory, m3probe_fx_parameter_name, kFilterName,
++                           m3probe_fx_id, at<const char>(kInstrumentFilterPage), 0};
++    return sdk_register_effect(&record) > 0;
++}
++
++void m3probe_filter_init(u32 id, const char* name, const char* factory,
++                         const char* parameters, u32 page) {
++    const auto register_filter = stock<Registrar>(kRegisterFilter);
++    // Reproduce the final stock registration (Dynamic) with its original ABI.
++    register_filter(id, name, factory, parameters, page);
++    const volatile u32* svf = row(kStockSvf);
++    if (probe_id() != kProbeId || svf[0] != kStockSvfFactory ||
++        !name_matches(svf, "svf", 3)) return;
++    if (empty(row(kProbeId))) {
++        register_filter(kProbeId, kFilterName, reinterpret_cast<const char*>(resonator_factory),
++                        m3probe_fx_parameter_name, svf[3]);
++    }
++}
+diff --git a/sdk/platform/opxy-1.2.1/m3_setup_ui.hpp b/sdk/platform/opxy-1.2.1/m3_setup_ui.hpp
+new file mode 100644
+index 0000000..7540831
+--- /dev/null
++++ b/sdk/platform/opxy-1.2.1/m3_setup_ui.hpp
+@@ -0,0 +1,361 @@
++// Included in the generated registration translation unit for this isolated build.
++#include "screen.hpp"
++#include "resonator.hpp"
++#include "sweep_display.hpp"
++namespace m3_ui {
++using namespace opxy;
++using namespace opxy::platform;
++using namespace m3_resonator;
++constexpr u32 tracks = 8, patterns = 16, slots = tracks * patterns;
++constexpr u32 pattern_bytes = 0x53f4, track_bytes = 0x53f44;
++constexpr u32 clipboard = 0x84ffd208, private_message = 128;
++constexpr u32 setup_page = 82, main_page = 83;
++constexpr u32 initial_settings = unsigned(Exciter::Pulse);
++struct Settings { u32 word[slots]; };
++Settings saved, pending;
++u32 pending_project, menu_pattern, last_sent[tracks];
++u32 render_page;
++bool sent[tracks];
++u32 copied;
++u32 audio[tracks];
++u32 active() { return word(0x840a0524); }
++u32 pattern_for(u32 t) { return stock<u32(u32)>(0x8d587708)(t); }
++int index_of(u32 project, u32 pointer) {
++    if (!project || pointer < project + 0xd7c) return -1;
++    const u32 offset = pointer - project - 0xd7c;
++    if (offset >= tracks * track_bytes) return -1;
++    const u32 track = offset / track_bytes, within = offset % track_bytes;
++    if (within % pattern_bytes || within >= patterns * pattern_bytes) return -1;
++    return int(track * patterns + within / pattern_bytes);
++}
++bool context(u32 track) {
++    if (track >= tracks || track != byte(kSelectedTrack) || word(0x080238bc) != 2 || word(kScreen) != 0) return false;
++    auto controller = stock<const u32*()>(0x8c0944b0)();
++    return controller && *controller == 0x8400dff8 && stock<u32(u32)>(0x8d5878d4)(track) == 11;
++}
++bool plain() { return !shift_held() && !stock<u32()>(0x8d5b7e34)(); }
++void send(u32 track, u32 value) {
++    if (!sent[track] || last_sent[track] != value) {
++        stock<void(u32,i32)>(0x8d4dc84c)(private_message, i32((track << setup_bits) | value));
++        sent[track] = true;
++        last_sent[track] = value;
++    }
++}
++void publish_track(u32 project,u32 track) {
++    const u32 playing = stock<u32(u32)>(0x8d586014)(track);
++    const int slot = index_of(project, playing);
++    if (slot >= 0) send(track, saved.word[slot]);
++}
++void refresh() {
++    const u32 project = active();
++    if (!project || word(0x840a0528)) return;
++    for (u32 t = 0; t < tracks; ++t) publish_track(project,t);
++}
++bool menu(u32 t) {
++    if (menu_pattern && (!context(t) || menu_pattern != pattern_for(t))) menu_pattern = 0;
++    return menu_pattern != 0;
++}
++namespace {
++using namespace opxy::screen;
++void number(char* out, unsigned value, const char* suffix) {
++    if (value >= 10000) *out++ = char('0' + value / 10000);
++    if (value >= 1000) *out++ = char('0' + value / 1000 % 10);
++    if (value >= 100) *out++ = char('0' + value / 100 % 10);
++    if (value >= 10) *out++ = char('0' + value / 10 % 10);
++    *out++ = char('0' + value % 10);
++    do { *out++ = *suffix; } while (*suffix++);
++}
++void interval(char* out, int value) {
++    if (value > 0) *out++ = '+';
++    if (value < 0) *out++ = '-';
++    number(out, unsigned(value < 0 ? -value : value), "");
++}
++void write_text(Leaf* node, const char* value) {
++    if (node) opxy::screen::set_text(node,value);
++}
++
++struct Renderer {
++    struct Object {
++        Base base;
++        u32 shown;
++        Leaf *first, *second, *routing, *placement;
++        PathNode* icons[5];
++        PathNode* blend;
++        u16 shades[19];
++        u16 padding;
++    };
++    static void init(Object* o) {
++        clear(o);
++        o->shown = ~0u;
++        if (!o->base.svg) return;
++        o->first = text_node(find(&o->base,"first"));
++        o->second = text_node(find(&o->base,"second"));
++        o->routing = text_node(find(&o->base,"routing"));
++        o->placement = text_node(find(&o->base,"placement"));
++        o->blend = path_node(find(&o->base,"blend"));
++        char id[] = "icon0";
++        for (u32 i = 0; i < 5; ++i) {
++            id[4] = char('0' + i);
++            o->icons[i] = path_node(find(&o->base,id));
++        }
++        for (u32 i = 0; i < 19; ++i) {
++            char name[10] = "shade";
++            number(name + 5,i,"");
++            auto donor = path_node(find(&o->base,name));
++            if (donor) o->shades[i] = donor->fill;
++        }
++    }
++    static void shade(PathNode* p, u16 id) {
++        if (p && id && p->fill != id) {
++            set_fill(p,id);
++            invalidate(p);
++        }
++    }
++    static void frame(Object* o, i32) {
++        if (render_page != setup_page || !o->base.svg) return;
++        const int slot = index_of(active(),menu_pattern);
++        if (slot < 0) return;
++        const u32 value = saved.word[slot];
++        if (o->shown != value) {
++            const Setup s = unpack(value);
++            char first[5], second[5];
++            interval(first,s.interval1);
++            interval(second,s.interval2);
++            write_text(o->first,first);
++            write_text(o->second,second);
++            write_text(o->routing,s.mode == Mode::Wide ? "Wide" : "Bypass");
++            write_text(o->placement,s.whole ? "Whole" : "Resonator");
++            for (u32 i = 0; i < 5; ++i)
++                shade(o->icons[i],o->shades[unsigned(s.exciter) == i + unsigned(Exciter::Pulse)]);
++            shade(o->blend,o->shades[2 + (s.blend * 16 + 50) / 100]);
++            o->shown = value;
++        }
++        draw(&o->base);
++    }
++};
++
++struct MainRenderer {
++    struct Object {
++        Base base;
++        PathNode *response, *badge;
++        Leaf *q, *duration, *type;
++        u32 shown;
++        i32 current[4];
++    };
++    static void init(Object* o) {
++        clear(o);
++        if (!o->base.svg) return;
++        o->response = path_node(find(&o->base,"sweep_curve"));
++        o->badge = path_node(find(&o->base,"badge"));
++        o->q = text_node(find(&o->base,"q"));
++        o->duration = text_node(find(&o->base,"duration"));
++        o->type = text_node(find(&o->base,"type"));
++        if (o->q) anchor_middle(o->q);
++    }
++    static void position(Leaf* node, i32 x, i32 y) {
++        const u32 at[] = {6,7};
++        const i32 values[] = {x * 1024,y * 1024};
++        if (node) set_words(node,at,values);
++    }
++    static void update_curve(Object* o) {
++        PathNode* curve = o->response;
++        if (!curve) return;
++        const Vector& v = curve->commands;
++        constexpr u32 points = m3_display::curve_points;
++        if (!ordered(v) || (v.begin & 3) || v.end - v.begin != sizeof(Command) * (points + 3)) return;
++        auto* commands = reinterpret_cast<Command*>(v.begin);
++        if (commands[0].type != 1 || commands[points + 2].type != 5) return;
++        for (u32 i = 1; i <= points + 1; ++i)
++            if (commands[i].type != 2) return;
++        i32 y[points];
++        m3_display::sweep_pixels(o->current[0],o->current[1],o->current[2],y);
++        for (u32 i = 0; i < points; ++i) commands[i + 1].y = y[i] * 1024;
++        invalidate(curve);
++
++        // Anchor at the resonant frequency, interpolating on the same polygon.
++        const u32 f = m3_display::interpolate(m3_display::frequency_table,m3_display::normalized(o->current[0]),6);
++        u32 i = 0;
++        while (i + 2 < points && m3_display::plot_frequency[i+1] < f) ++i;
++        const u32 lo = m3_display::plot_frequency[i], hi = m3_display::plot_frequency[i+1];
++        const i32 mix = f <= lo ? 0 : i32((f-lo)*256u/(hi-lo));
++        const i32 left = commands[i+1].x / 1024, right = commands[i+2].x / 1024;
++        const i32 x = bounded(left + (right-left)*mix/256,51,429);
++        const i32 top = bounded(y[i] + (y[i+1]-y[i])*mix/256 + 3,62,139);
++        if (o->badge) position(&o->badge->leaf,x,top);
++        position(o->q,x,top+20);
++    }
++    static void frame(Object* o, i32) {
++        if (render_page != main_page || !o->base.svg) return;
++        const u32 t = platform::byte(platform::kSelectedTrack);
++        u32 changed = o->shown ? 0 : 15;
++        for (u32 i = 0; i < 4; ++i) {
++            const i32 value = stock<i32(u32,u32,u32,u32)>(0x8d5ac9dc)(0x86bd027c,t,16+i,1);
++            if (value != o->current[i]) changed |= 1u << i;
++            o->current[i] = value;
++        }
++        if (changed & 7) update_curve(o);
++        if (changed & 2) {
++            char value[4];
++            number(value,(m3_display::normalized(o->current[1])*99 + 16383)/32767,"");
++            write_text(o->q,value);
++        }
++        if (changed & 4) {
++            const u32 shape = m3_display::normalized(o->current[2]);
++            write_text(o->type,shape < 8192 ? "lowpass" : shape < 24576 ? "bandpass" : "highpass");
++        }
++        if (changed & 8) {
++            char value[8];
++            const u32 ms = decay_ms(decay_position(o->current[3]));
++            number(value,ms,"");
++            write_text(o->duration,ms ? value : "Off");
++            position(o->duration,ms >= 1000 ? 424 : 430,169);
++        }
++        o->shown = 1;
++        draw(&o->base);
++    }
++};
++
++}
++}
++OPXY_SCREEN(m3_ui::Renderer, "m3_setup", "m3_setup.svg", 256, 160)
++namespace m3_ui {
++const Record screen_record = {nullptr,nullptr,"trine",reinterpret_cast<const char*>(11),reinterpret_cast<const char*>(setup_page),0};
++const Screen setup_screen = {reinterpret_cast<char*>(&opxy_screen_state),sizeof(opxy_screen_state),
++    reinterpret_cast<const char*>(&opxy_screen_vtable),opxy_screen_asset,
++    reinterpret_cast<char*(*)(char*,u32)>(&opxy_screen_ctor)};
++namespace {
++using namespace opxy::screen;
++MainRenderer::Object main_object;
++const char main_asset[] = "m3_main.svg";
++const VTable<MainRenderer> main_methods = {
++    &destroy<MainRenderer::Object>, &destroy<MainRenderer::Object>,
++    reinterpret_cast<const void*>(0x8d51fcd4), &MainRenderer::frame, &MainRenderer::init,
++    reinterpret_cast<const void*>(0x8c0867f0)
++};
++char* main_construct(char* mem, u32 page) {
++    return reinterpret_cast<char*>(construct(reinterpret_cast<MainRenderer::Object*>(mem),
++                                              page, 256, main_asset, &main_methods));
++}
++const Record main_record = {nullptr,nullptr,"trine",reinterpret_cast<const char*>(11),reinterpret_cast<const char*>(main_page),0};
++const Screen main_screen = {reinterpret_cast<char*>(&main_object),sizeof(main_object),
++    reinterpret_cast<const char*>(&main_methods),main_asset,main_construct};
++}
++
++}
++extern "C" {
++int m3_setup_register() __asm__("m3_setup_register");
++u32 m3_setup_frame(u32) __asm__("m3_setup_frame");
++u32 m3_setup_click(u32,u32,u32) __asm__("m3_setup_click");
++u32 m3_stock_click(u32,u32,u32) __asm__("m3_stock_click");
++int m3_setup_turn(u32,u32,u32) __asm__("m3_setup_turn");
++void m3_receive(u32,u32,i32) __asm__("m3_receive");
++u32 m3_step(u32,u32,u32) __asm__("m3_step");
++u32 m3_project() __asm__("m3_project");
++void m3_new() __asm__("m3_new");
++void m3_stock_new() __asm__("m3_stock_new");
++void* m3_copy(void*,const void*,u32) __asm__("m3_copy");
++}
++int m3_setup_register() {
++    const int alt = sdk_register_screen(&m3_ui::screen_record, &m3_ui::setup_screen);
++    const int main = sdk_register_screen(&m3_ui::main_record, &m3_ui::main_screen);
++    return alt && main;
++}
++u32 m3_setup_frame(u32 selected) {
++    using namespace m3_ui;
++    refresh();
++    render_page = 0;
++    const u32 track = opxy::platform::byte(opxy::platform::kSelectedTrack);
++    if (selected != 3 || !context(track) || !plain()) {
++        menu_pattern = 0;
++        return 0;
++    }
++    if (menu(track) && sdk_screen_ready(&screen_record, &setup_screen)) render_page = setup_page;
++    else if (sdk_screen_ready(&main_record, &main_screen)) render_page = main_page;
++    return render_page;
++}
++namespace m3_ui {
++bool change(u32 track, int slot, u32 next) {
++    if (next == saved.word[slot]) return false;
++    saved.word[slot] = next;
++    publish_track(active(),track);
++    stock<void()>(0x8d585ee8)();
++    return true;
++}
++}
++u32 m3_setup_click(u32 track,u32 key,u32 controller) {
++    using namespace m3_ui;
++    if (key >= 11 && key <= 13 && context(track) && plain()
++            && sdk_screen_ready(&screen_record, &setup_screen)) {
++        const u32 pattern = pattern_for(track);
++        const int slot = index_of(active(), pattern);
++        if (slot >= 0 && key == 11) {
++            menu_pattern = menu_pattern == pattern ? 0 : pattern;
++            return 0;
++        }
++        if (slot >= 0 && menu(track)) {
++            change(track,slot,click(saved.word[slot], key - 10));
++            return 0;
++        }
++    }
++    return m3_stock_click(track,key,controller);
++}
++int m3_setup_turn(u32 track,u32 index,u32 event) {
++    using namespace m3_ui;
++    if (index < 16 || index > 19 || !menu(track) || !plain()) return -1;
++    const int slot = index_of(active(), menu_pattern);
++    if (slot < 0 || !event) return 0;
++    return change(track,slot,edit(saved.word[slot], index-16, at<const i32>(event)[1]));
++}
++void m3_receive(u32 base,u32 id,i32 value) {
++    using namespace m3_ui;
++    if (id != private_message) { stock<void(u32,u32,i32)>(0x8d50eb8c)(base,id,value); return; }
++    const u32 t = u32(value) >> setup_bits, settings = u32(value) & setup_mask;
++    if (t < tracks && valid_setup(settings)) audio[t] = settings;
++}
++u32 m3_step(u32 project,u32 track,u32 position) {
++    const u32 result = stock<u32(u32,u32,u32)>(0x8d5936c0)(project,track,position);
++    if (track < m3_ui::tracks) m3_ui::publish_track(m3_ui::active(),track);
++    return result;
++}
++u32 m3_project() {
++    using namespace m3_ui;
++    const u32 project = stock<u32()>(0x8d584210)();
++    if (project && project == pending_project) saved = pending;
++    else for (u32 i = 0; i < slots; ++i) saved.word[i] = initial_settings;
++    pending_project = menu_pattern = 0;
++    for (u32 t = 0; t < tracks; ++t) sent[t] = false;
++    refresh();
++    return project;
++}
++void m3_new() { m3_ui::pending_project = 0; m3_stock_new(); }
++void* m3_copy(void* dst, const void* src, u32 bytes) {
++    using namespace m3_ui;
++    const u32 to = reinterpret_cast<Address>(dst), from = reinterpret_cast<Address>(src);
++    if (bytes == pattern_bytes) {
++        const u32 project = active();
++        const int a = index_of(project, from), b = index_of(project, to);
++        const u32 setting = a >= 0 ? saved.word[a] : from == clipboard ? copied : initial_settings;
++        if (to == clipboard) copied = setting;
++        if (b >= 0) saved.word[b] = setting;
++    }
++    return stock<void*(void*,const void*,u32)>(0x040201c4)(dst,src,bytes);
++}
++// Companion callbacks execute on the GUI role. Restore is staged until stock
++// publishes the deserialized project buffer.
++extern "C" {
++unsigned m3_saved(unsigned) __asm__("m3_saved");
++void m3_loaded(unsigned, const opxy::u8*, unsigned) __asm__("m3_loaded");
++}
++unsigned m3_saved(unsigned i) { return i < m3_ui::slots ? m3_ui::saved.word[i] : 0; }
++void m3_loaded(unsigned project, const opxy::u8* bytes, unsigned width) {
++    m3_ui::pending_project = project;
++    for (unsigned i = 0; i < m3_ui::slots; ++i) {
++        unsigned word = 0;
++        if (!bytes || !width) word = m3_ui::initial_settings;
++        if (bytes && (width == 2 || width == 4))
++            for (unsigned j = 0; j < width; ++j)
++                word |= unsigned(bytes[i * width + j]) << (8 * j);
++        if (width == 2) word = m3_resonator::migrate_v1(word);
++        m3_ui::pending.word[i] = m3_resonator::valid_setup(word) ? word : 0;
++    }
++}
+diff --git a/sdk/platform/opxy-1.2.1/project_companion.cpp b/sdk/platform/opxy-1.2.1/project_companion.cpp
+index c61a0cc..9b0c486 100644
+--- a/sdk/platform/opxy-1.2.1/project_companion.cpp
++++ b/sdk/platform/opxy-1.2.1/project_companion.cpp
+@@ -50,6 +50,10 @@ extern "C" void sdk_project_locks_byte(u32 byte) __asm__("sdk_project_locks_byte
+ extern "C" void sdk_project_locks_loaded(void* project, u32 valid) __asm__("sdk_project_locks_loaded");
+ // What open-xy.locks takes in the companion being written (project_companion.hpp).
+ u32 sdk_companion_reserved;
++#ifdef M3_RESONATOR
++extern "C" unsigned m3_saved(unsigned) __asm__("m3_saved");
++extern "C" void m3_loaded(unsigned,const opxy::u8*,unsigned) __asm__("m3_loaded");
++#endif
+ 
+ namespace {
+ typedef void File;
+@@ -196,6 +200,21 @@ void write_companion(void* project, u32 bytes, u32 crc) {
+     }
+     w.put(listed ? "\n      },\n" : "},\n");
+     w.put("      \"profile\": \"opxy-1.2.1\",\n      \"version\": 1\n    }");
++#ifdef M3_RESONATOR
++    w.put(",\n    \"open-xy.resonator\": {\"version\":2,\"data\":\"");
++    const char alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
++    u32 bits = 0, rem = 0;
++    for (u32 i = 0; i < 128; ++i) {
++        const u32 settings = m3_saved(i);
++        for (u32 byte = 0; byte < 4; ++byte) {
++            bits = (bits << 8) | ((settings >> (8 * byte)) & 255);
++            rem += 8;
++            while (rem >= 6) { rem -= 6; w.byte(alphabet[(bits >> rem) & 63]); }
++        }
++    }
++    w.byte(alphabet[(bits << (6-rem)) & 63]);
++    w.put("=\"}");
++#endif
+     if(master_processor::processor_count()) {
+         const auto controls=master_processor::current();
+         u32 count=0;const auto* parameters=master_processor::parameters(count,controls.type ? controls.type : 1);
+@@ -805,6 +824,33 @@ bool master_section(Parser& p,bool& valid) {
+ // object with a positive integer version, as any section. Version 1's pool goes byte by
+ // byte to the step locks service's staged pool; locks_ok says it was read whole. A newer
+ // version is ignored.
++#ifdef M3_RESONATOR
++opxy::u8 resonator_data[512];
++u32 resonator_width;
++bool resonator_section(Parser& p, bool& ok) {
++    resonator_width = 0;
++    ok = false;
++    if (p.peek() != '{') return p.skip();
++    u32 version = 0, count = 0;
++    bool have_version = false, data_ok = false;
++    const bool read = p.object([&](const Text& key) {
++        if (key.is("version")) return p.natural(version,have_version);
++        if (!key.is("data")) return p.skip();
++        count = 0; data_ok = false;
++        if (p.peek() != '"') return p.skip();
++        return p.base64([&](u32 byte) {
++            if (count < sizeof(resonator_data)) resonator_data[count] = byte;
++            ++count;
++        }, data_ok);
++    });
++    ok = have_version && version >= 1;
++    if (ok && data_ok) {
++        if (version == 1 && count == 256) resonator_width = 2;
++        if (version == 2 && count == 512) resonator_width = 4;
++    }
++    return read;
++}
++#endif
+ bool locks_ok;
+ bool locks_section(Parser& p, bool& ok) {
+     ok = locks_ok = false;
+@@ -875,6 +921,9 @@ bool read_document(File* file, u32& bytes, u32& crc, bool& applies) {
+         applies = false;
+         master_applies=false;master_defaults();
+         locks_ok = false;
++#ifdef M3_RESONATOR
++        resonator_width = 0;
++#endif
+         valid = true;
+         invalid_count = 0;
+         clear_maps();
+@@ -888,6 +937,13 @@ bool read_document(File* file, u32& bytes, u32& crc, bool& applies) {
+             }
+             if (name.is("open-xy.machines")) return machines_section(p, applies, machines_ok);
+             bool ok;
++#ifdef M3_RESONATOR
++            if (name.is("open-xy.resonator")) {
++                if (!resonator_section(p,ok)) return false;
++                if (!note_section(name,ok)) valid = false;
++                return true;
++            }
++#endif
+             if (name.is("open-xy.locks")) {
+                 if (!locks_section(p, ok)) return false;
+                 if (!note_section(name, ok)) valid = false;
+@@ -938,6 +994,10 @@ bool apply_companion(void* project, const char* path) {
+     if (!applies || !measure(path, read_chunk, measured_bytes, measured_crc) || measured_bytes != bytes ||
+         measured_crc != crc)
+         return false;
++#ifdef M3_RESONATOR
++    if (machines_apply && resonator_width)
++        m3_loaded(static_cast<u32>(reinterpret_cast<opxy::platform::Address>(project)), resonator_data, resonator_width);
++#endif
+     if(machines_apply)remap(static_cast<unsigned char*>(project));
+     if(master_applies)master_processor::loaded_state(static_cast<u32>(reinterpret_cast<opxy::platform::Address>(project)),master_state);
+     return locks_ok;
+@@ -955,6 +1015,9 @@ u32 sdk_project_save(void* project, const char* path) {
+ // Stock's deserialize, then the companion's numbers and step locks. The project is the inactive buffer,
+ // which nothing reads until stock validates it and makes it pending.
+ u32 sdk_project_load(void* project, const char* path) {
++#ifdef M3_RESONATOR
++    m3_loaded(0,nullptr,0);
++#endif
+     master_processor::clear_pending();
+     sdk_project_locks_begin();
+     const u32 loaded = deserialize(project, path);
+diff --git a/sdk/platform/opxy-1.2.1/screen_hooks.s b/sdk/platform/opxy-1.2.1/screen_hooks.s
+index 8adbb5f..9dd1183 100644
+--- a/sdk/platform/opxy-1.2.1/screen_hooks.s
++++ b/sdk/platform/opxy-1.2.1/screen_hooks.s
+@@ -57,3 +57,25 @@ sdk_fx_value:
+     UNLINK;
+     RTS;
+ .size sdk_fx_value, .-sdk_fx_value
++/* Replay the eight displaced bytes of each stock function entry. */
++.section .text
++.align 2
++.global m3_stock_click
++.type m3_stock_click, STT_FUNC
++m3_stock_click:
++    LINK 8;
++    [--SP] = (R7:4, P5:5);
++    SP += -16;
++    P0.H = 0x8c0b; P0.L = 0x2a74;
++    JUMP (P0);
++.size m3_stock_click, .-m3_stock_click
++
++.global m3_stock_new
++.type m3_stock_new, STT_FUNC
++m3_stock_new:
++    LINK 21552;
++    [--SP] = (R7:4, P5:3);
++    SP += -20;
++    P0.H = 0x8d58; P0.L = 0x811c;
++    JUMP (P0);
++.size m3_stock_new, .-m3_stock_new
+diff --git a/sdk/platform/opxy-1.2.1/screen_order.cpp.in b/sdk/platform/opxy-1.2.1/screen_order.cpp.in
+index 966a1fd..21d6bb5 100644
+--- a/sdk/platform/opxy-1.2.1/screen_order.cpp.in
++++ b/sdk/platform/opxy-1.2.1/screen_order.cpp.in
+@@ -5,6 +5,9 @@
+ #include "stock.hpp"
+ 
+ extern "C" {
++#ifdef M3_RESONATOR
++opxy::u32 m3_setup_frame(opxy::u32) __asm__("m3_setup_frame");
++#endif
+ opxy::u32 sdk_screen_activation(opxy::u32, opxy::u32) __asm__("sdk_screen_activation");
+ opxy::u32 (*sdk_screen_substitute)(opxy::u32) __asm__("sdk_screen_substitute");
+ int sdk_screen_owned(opxy::u32) __asm__("sdk_screen_owned");
+@@ -24,7 +27,13 @@ opxy::u32 sdk_screen_next(opxy::platform::ScreenCursor* cursor, opxy::u32 select
+     const bool first = cursor->page == 0;
+     // Once a frame, at its first slot: the sends' effect controls 5..8.
+     if (first) sdk_send_refresh();
+-    const opxy::u32 substitute = first && sdk_screen_substitute ? sdk_screen_substitute(selected) : 0;
++    opxy::u32 substitute = first && sdk_screen_substitute ? sdk_screen_substitute(selected) : 0;
++#ifdef M3_RESONATOR
++    if (first) {
++        const opxy::u32 setup = m3_setup_frame(selected);
++        if (setup) substitute = setup;
++    }
++#endif
+     const opxy::u32 more = order.advance(*cursor, selected, substitute, sdk_screen_owned, sdk_sample_screen);
+     if (first) activation.select(order.to ? order.to : order.promoted);
+     return more;
+diff --git a/sdk/platform/opxy-1.2.1/synth_controls.cpp b/sdk/platform/opxy-1.2.1/synth_controls.cpp
+index 085df15..b16b047 100644
+--- a/sdk/platform/opxy-1.2.1/synth_controls.cpp
++++ b/sdk/platform/opxy-1.2.1/synth_controls.cpp
+@@ -421,7 +421,14 @@ u32 sdk_param_steps(u32 track, u32 index, u32* scale) {
+ // of the selected track through stock, which owns stepping, parameter locks
+ // and publication. Indices 0..3 come only from the engine page's unshifted
+ // encoders, so an owned synth's position edits the parameter it shows.
++#ifdef M3_RESONATOR
++extern "C" int m3_setup_turn(u32,u32,u32) __asm__("m3_setup_turn");
++#endif
+ u32 sdk_synth_turn(u32 project, u32 track, u32 index, u32 event) {
++#ifdef M3_RESONATOR
++    const int handled = m3_setup_turn(track,index,event);
++    if (handled >= 0) return static_cast<u32>(handled);
++#endif
+     Track* t;
+     // The instrument controller maps Shift's engine-page row to slots 4..7.
+     // Reinterpret it as fine editing of the same visible position, including
+diff --git a/tooling/adapters.py b/tooling/adapters.py
+index f60855b..d61421d 100644
+--- a/tooling/adapters.py
++++ b/tooling/adapters.py
+@@ -333,6 +333,10 @@ extern "C" unsigned {prefix}_display_validate(const Frame* frame) {{
+ 
+ def generate_registration(directory, m):
+     """A machine's stock record (and own screen) for the SDK's checked registration."""
++    if m.id == 'm3probe':
++        require(m.kind == 'effect' and m.display == 'stock' and m.identity['effect'] == 11,
++                'M3 probe needs ID 11 from the isolated layout')
++        return expand('m3_probe.cpp.in', RELOCATED, Path(directory) / 'registration.cpp')
+     p, effect = m.prefix, m.kind == 'effect'
+     name = m.native_name.encode('ascii')
+     require(1 <= len(name) <= 15 and b'\0' not in name, 'Unsupported inline engine name')
+diff --git a/tooling/native.py b/tooling/native.py
+index 9baebf4..d2fe594 100644
+--- a/tooling/native.py
++++ b/tooling/native.py
+@@ -19,7 +19,7 @@ import tempfile
+ import xml.etree.ElementTree as ET
+ 
+ from . import benchmark, extensions, release_floor, runtime, screen, startup_label, stock_content, stock_limits, stock_tables
+-from .adapters import (pad_mix, sends_per_key, aux_preset_files, catalog_entry, check_aux_presets, generate_control, generate_display, generate_fx_object,
++from .adapters import (pad_mix, sends_per_key, aux_preset_files, catalog_defaults, catalog_entry, check_aux_presets, generate_control, generate_display, generate_fx_object,
+                        generate_player_object, generate_player_table, generate_registration,
+                        generate_registration_stock, generate_sample_voice,
+                        generate_sample_callbacks, generate_screen, generate_screen_order,
+@@ -116,6 +116,26 @@ def configuration(entries=None, layout=None):
+     require([p['kind'] for p in profile['patches']].count('startup') == 1, 'Expected one startup label edit')
+     machines = Collection(collection(entries, layout), extensions.check_collection(
+         [extensions.extension_at(e['extension']) for e in entries or () if 'extension' in e]))
++    has_probe = any(machine.id == 'm3probe' for machine in machines)
++    if has_probe:
++        require(len(machines) == 1 and not extensions_of(machines) and machines[0].identity['effect'] == 11,
++                'Trine requires its standalone layout')
++        for hook in profile['patches']:
++            replacements = {'sdk_master_receive': 'm3_receive', 'sdk_master_project': 'm3_project',
++                            'sdk_project_new': 'm3_new', 'sdk_lock_step': 'm3_step'}
++            if hook.get('symbol') in replacements:
++                hook['symbol'] = replacements[hook['symbol']]
++                del hook['service']
++        profile['patches'].extend([
++            dict(kind='hook', address='0x8d506c3e', file_offset='0x13de9a', length=4,
++                 before='ffe37ffd', symbol='m3probe_filter_init', call=True),
++            dict(kind='hook', address='0x8c0b2a6c', file_offset='0xe9ca8', length=8,
++                 before='00e80200e505866f', symbol='m3_setup_click', call=False),
++        ])
++        copies = ROOT / 'm3-copy-sites.json'
++        if copies.exists():
++            profile['patches'].extend(json.loads(copies.read_text()))
++        check_patch_boundaries(profile, len(profile['patches']))
+     definitions = dict(DEFINITIONS)
+     for m in machines:
+         if m.kind == 'player':
+@@ -177,7 +197,7 @@ def check_sources(machines):
+                 validate_source_boundary(path.read_text(encoding='utf-8'), m.source(path.relative_to(m.root).as_posix()))
+ 
+ 
+-def compile_cxx(cxx, assembler, source, obj, includes=()):
++def compile_cxx(cxx, assembler, source, obj, includes=(), defines=()):
+     """cc1plus via the driver to assembly, then the pinned assembler.
+ 
+     The driver never chooses an assembler, so object bytes depend only on the
+@@ -187,7 +207,7 @@ def compile_cxx(cxx, assembler, source, obj, includes=()):
+     obj = Path(obj).resolve()
+     assembly = obj.with_suffix('.s')
+     generated = Path(source).is_absolute()
+-    flags = [*CXX_FLAGS, *('-I' + str((ROOT / path).resolve()) for path in includes), '-fstack-usage']
++    flags = [*CXX_FLAGS, *defines, *('-I' + str((ROOT / path).resolve()) for path in includes), '-fstack-usage']
+     subprocess.run([str(cxx), *flags, '-S', Path(source).name if generated else source, '-o', str(assembly)],
+                    cwd=Path(source).parent if generated else ROOT, check=True, capture_output=True, text=True,
+                    timeout=300, **hidden_process())
+@@ -532,7 +552,8 @@ def compile_collection(directory, toolchain, compiler, profile, machines, defini
+         execute([tools['as'], '-mcpu=bf707', '-I', ROOT, '-o', obj, source])
+ 
+     def cxx(source, obj, m=None):
+-        compile_cxx(gcc['cxx'], tools['as'], source, obj, includes(m))
++        compile_cxx(gcc['cxx'], tools['as'], source, obj, includes(m),
++                    ['-DM3_RESONATOR'] if any(item.id == 'm3probe' for item in machines) else [])
+ 
+     def display_unit(folder, m):
+         generate_display(folder, machine=m)
+@@ -1086,6 +1107,8 @@ def extend_catalog(catalog, profile, machines):
+     The insertion offsets are bound to the exact authenticated stock catalog.
+     """
+     listed = [m for m in machines if catalog_entry(m)]  # aux machines are not in tracks 1-8's list
++    probes = [m for m in listed if m.id == 'm3probe']
++    listed = [m for m in listed if m.id != 'm3probe']
+     groups = dict(engine_types=by_kind(listed, 'synth', 'drum', 'sample'), fx_types=by_kind(listed, 'effect'),
+                   seq_types=by_kind(listed, 'player'))
+     result, base = catalog, json.loads(catalog)
+@@ -1093,7 +1116,20 @@ def extend_catalog(catalog, profile, machines):
+         result = result[:at] + ''.join(catalog_entry(m) for m in groups[key]).encode('utf-8') + result[at:]
+     added = {key: [json.loads(catalog_entry(m).strip().lstrip(',')) for m in group] for key, group in groups.items()}
+     require(all(len(entry['default_params']) == 8 for group in added.values() for entry in group), 'Invalid catalog entry')
+-    require(json.loads(result) == dict(base, **{key: base[key] + added[key] for key in groups}),
++    if probes:
++        require(len(probes) == 1 and probes[0].kind == 'effect' and probes[0].identity['effect'] == 11,
++                'Invalid M3 probe identity')
++        probe = probes[0]
++        defaults = catalog_defaults(probe.definition)
++        rows = [dict(type='trine', id=probe.identity['effect'], default_params=defaults)]
++        occupied = [row['id'] for key in ('fx_types', 'filter_types') for row in json.loads(result)[key]]
++        require(all(row['id'] not in occupied for row in rows), 'M3 A/B ID already present in catalog')
++        start = result.index(b'[', result.index(b'"filter_types"'))
++        _, end = json.JSONDecoder().raw_decode(result[start:].decode('ascii'))
++        at = start + end - 1
++        result = result[:at] + b''.join(b', ' + json.dumps(row).encode('ascii') for row in rows) + result[at:]
++        added['filter_types'] = rows
++    require(json.loads(result) == dict(base, **{key: base[key] + entries for key, entries in added.items()}),
+             'Unexpected catalog modification')
+     return result
+ 
+@@ -1101,6 +1137,10 @@ def extend_catalog(catalog, profile, machines):
+ def prepare_assets(catalog, profile, machines):
+     require(sha(catalog) == profile['stock_catalog_sha256'], 'Stock catalog hash mismatch')
+     outputs = {'content/op1_factory.json': extend_catalog(catalog, profile, machines)}
++    for machine in machines:
++        if machine.id == 'm3probe':
++            for artwork in ('m3_main.svg', 'm3_setup.svg'):
++                outputs[f'content/display/{artwork}'] = Path(machine.source(artwork)).read_bytes()
+     owners = {}  # every file a machine or extension adds, by who adds it
+     for m in machines:
+         if m.display != 'stock':
+diff --git a/tooling/startup.py b/tooling/startup.py
+index e2d70c6..c5ebdec 100644
+--- a/tooling/startup.py
++++ b/tooling/startup.py
+@@ -75,6 +75,9 @@ def render(prefixes, effects=(), stock_page=(), sample_screens=(), effect_screen
+     # An effect is registered on both roles already; its page, which its record
+     # names, is ready once its screen is in place.
+     screens = [f'    {prefix}_screen_register();' for prefix in effect_screens]
++    if 'm3probe' in effects:
++        declarations.append(_declare('m3_setup_register'))
++        screens.append('    m3_setup_register();')
+     for prefix in prefixes:
+         guard = '' if prefix in stock_page else f'if ({prefix}_screen_register() == 1) '
+         # A sample engine's own screen never holds back the engine: it plays without it.

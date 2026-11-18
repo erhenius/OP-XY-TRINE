@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="480" height="220" viewBox="0 0 480 220">
+<rect width="480" height="220" fill="#000000"/>
+<text id="type" transform="matrix(1 0 0 1 30 55)" font-family="UniversNextPro-Light" font-size="10px" fill="#cdcdcd">bandpass</text>
+<circle cx="440" cy="51" r="5.4" fill="#585858"/><path d="M433 44q-5 7 0 14 M447 44q5 7 0 14" fill="none" stroke="#cdcdcd" stroke-width="1.1"/>
+<rect x="30" y="60" width="130" height="112" fill="#191919"/>
+<rect x="160" y="60" width="89" height="112" fill="#4b4b4b"/>
+<rect x="249" y="60" width="80" height="112" fill="#646464"/>
+<rect x="329" y="60" width="121" height="112" fill="#afafaf"/>
+<path d="M160 60V172" stroke="#000000" stroke-width=".7"/>
+<path d="M249 60V172" stroke="#000000" stroke-width=".7"/>
+<path d="M329 60V172" stroke="#000000" stroke-width=".7"/>
+<path id="sweep_curve" fill="#000000" d="M30 59 L30 100 L46 100 L62 100 L79 100 L95 100 L111 100 L128 100 L144 100 L160 100 L171 100 L182 100 L193 100 L204 100 L216 100 L227 100 L238 100 L249 100 L259 100 L269 100 L279 100 L289 100 L299 100 L309 100 L319 100 L329 100 L344 100 L359 100 L374 100 L390 100 L405 100 L420 100 L435 100 L450 100 L450 59 Z"/>
+<path id="badge" fill="#000000" d="M-17 0H17Q20 0 20 3V22Q20 25 17 25H-17Q-20 25 -20 22V3Q-20 0 -17 0Z"/>
+<text id="q" transform="matrix(1 0 0 1 0 0)" font-family="UniversNextPro-Light" font-size="20px" fill="#cdcdcd">00</text>
+<text id="duration" transform="matrix(1 0 0 1 420 169)" font-family="UniversNextPro-Light" font-size="10px" fill="#191919">589</text>
+<text transform="matrix(1 0 0 1 28 185)" font-family="UniversNextPro-Light" font-size="10px" fill="#cdcdcd">50</text>
+<text transform="matrix(1 0 0 1 155 185)" font-family="UniversNextPro-Light" font-size="10px" fill="#cdcdcd">1k</text>
+<text transform="matrix(1 0 0 1 245 185)" font-family="UniversNextPro-Light" font-size="10px" fill="#cdcdcd">2k</text>
+<text transform="matrix(1 0 0 1 325 185)" font-family="UniversNextPro-Light" font-size="10px" fill="#cdcdcd">5k</text>
+<text transform="matrix(1 0 0 1 423 185)" font-family="UniversNextPro-Light" font-size="10px" fill="#cdcdcd">20kHz</text>
+</svg>

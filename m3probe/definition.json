@@ -1,0 +1,53 @@
+{
+  "schema": 1,
+  "id": "m3probe",
+  "name": "Trine",
+  "parameters": [
+    {
+      "id": "cutoff",
+      "label": "Cutoff",
+      "default": 0.7152449382907343,
+      "mapping": {
+        "kind": "exponential",
+        "minimum": 45,
+        "maximum": 14500
+      },
+      "display": "percent"
+    },
+    {
+      "id": "resonance",
+      "label": "Reso",
+      "default": 0.20622677217837004,
+      "mapping": {
+        "kind": "exponential",
+        "minimum": 0.7,
+        "maximum": 5
+      },
+      "display": "percent"
+    },
+    {
+      "id": "shape",
+      "label": "Shape",
+      "default": 0,
+      "mapping": {
+        "kind": "linear",
+        "minimum": 0,
+        "maximum": 1
+      },
+      "display": "percent"
+    },
+    {
+      "id": "decay",
+      "label": "Decay",
+      "default": 0.640625,
+      "mapping": {
+        "kind": "linear",
+        "minimum": 0,
+        "maximum": 1
+      },
+      "display": "percent"
+    }
+  ],
+  "presets": {},
+  "resources": {}
+}
