@@ -1,5 +1,7 @@
 # Trine for OP-XY
 
+![Trine M3 filter sweep and K2 setup animation](docs/trine.gif)
+
 Trine is a three-band, note-following instrument filter for the Teenage Engineering OP-XY. This repository contains the source, display assets, and build wrapper for Open-XY.
 
 Select **trine** with Shift + M3 on an instrument track. The three ringing bands follow the played note. The upper two bands default to +4 and +7 semitones. Turn setup K3 down one semitone for a minor triad.
