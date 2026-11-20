@@ -27,13 +27,19 @@ New projects start with Crossing Pulse and zero blend. Older saved Clean and Oct
 
 You need Git, Python 3.11 or newer, the Open-XY Blackfin toolchain, and an exact stock OP-XY OS 1.2.1 `os.ldr` copied from your own device. Follow the stock OS extraction steps in the [Open-XY build guide][build]. Keep the image outside the repository. Its SHA-256 is `60358afdaa9b58ed40411602f6d5d4e1e3e02553ff2da7e25038e71dd002b52f`.
 
+### Build with TE Builder
+
+In TE Builder 0.5.4, import this repository's Git URL or the [packaged Trine ZIP](release/Trine-sdk-v0.0.7-rc2.zip). Select **Trine** version `sdk-v0.0.7-rc2`. To build alongside Morph, select **Morph-gui2d22**. Both recipes use the same Open-XY v0.0.7 SDK and shared patches. Trine’s bundle also reserves its two display pages at build time based on the selected machines and carries its step-lock integration.
+
+Run `python3 package_manager.py Trine-sdk-v0.0.7-rc2.zip` to generate the import bundle. Run the same command with `--check` to verify its source and patch files. Use the corresponding older Trine bundle for jobs saved with the older SDK.
+
 ### Prepare the SDK
 
 Run these commands from your Trine checkout on Apple silicon macOS. Use `py -3` in place of `python3` on Windows. On Linux x86-64, follow the [SDK toolchain build instructions][linux] to populate `local/toolchain` instead of using `toolchain fetch`.
 
 ```sh
 git clone https://github.com/etcetc000/open-xy.git ../open-xy-sdk
-git -C ../open-xy-sdk checkout --detach a07b08faeb58cc7e74cdbc8bd98f809a8ffd5159
+git -C ../open-xy-sdk checkout --detach 28dd1a2e36599108c5eecf1a03f3b28601e50b39
 python3 ../open-xy-sdk/sdk.py toolchain fetch
 ```
 
@@ -59,6 +65,8 @@ python3 ../open-xy-sdk/sdk.py device push ../trine-build-01/candidate
 
 After the transfer reports **PASS**, exit MTP. With the OP-XY on power, choose **Write OS to boot partition** and wait for **firmware written ok!** before power-cycling. Open **Shift + M3** on an instrument track and select **trine**.
 
+The owner confirmed this combined build with Morph gui2d22 on hardware using TE Builder 0.5.4 and Open-XY v0.0.7.
+
 ## Hardware check
 
 Sweep cutoff and resonance together across the range. Check the badge at both ends and the decay readout at Off and 1,300 ms. Press K2. Turn K1 through all five logos and sweep K2 from dark gray to white. Adjust both intervals, press K3 and K4, then save and reload the project to confirm the selected settings.
@@ -69,6 +77,6 @@ Sweep cutoff and resonance together across the range. Check the badge at both en
 Trine builds against the [Open-XY SDK][sdk]. The patch modifies SDK code covered by the upstream MIT notice in [LICENSE-OPEN-XY](LICENSE-OPEN-XY).
 
 [sdk]: https://github.com/etcetc000/open-xy
-[build]: https://github.com/etcetc000/open-xy/blob/a07b08faeb58cc7e74cdbc8bd98f809a8ffd5159/docs/build.md#2-copy-the-os-from-your-op-xy
-[linux]: https://github.com/etcetc000/open-xy/blob/a07b08faeb58cc7e74cdbc8bd98f809a8ffd5159/docs/build.md#on-linux
-[install]: https://github.com/etcetc000/open-xy/blob/a07b08faeb58cc7e74cdbc8bd98f809a8ffd5159/docs/build.md#5-install
+[build]: https://github.com/etcetc000/open-xy/blob/28dd1a2e36599108c5eecf1a03f3b28601e50b39/docs/build.md#2-copy-the-os-from-your-op-xy
+[linux]: https://github.com/etcetc000/open-xy/blob/28dd1a2e36599108c5eecf1a03f3b28601e50b39/docs/build.md#on-linux
+[install]: https://github.com/etcetc000/open-xy/blob/28dd1a2e36599108c5eecf1a03f3b28601e50b39/docs/build.md#5-install

@@ -1,0 +1,81 @@
+diff --git a/sdk/platform/opxy-1.2.1/m3_setup_ui.hpp b/sdk/platform/opxy-1.2.1/m3_setup_ui.hpp
+index 593f1c4..a283963 100644
+--- a/sdk/platform/opxy-1.2.1/m3_setup_ui.hpp
++++ b/sdk/platform/opxy-1.2.1/m3_setup_ui.hpp
+@@ -250,6 +250,8 @@ u32 m3_stock_click(u32,u32,u32) __asm__("m3_stock_click");
+ int m3_setup_turn(u32,u32,u32) __asm__("m3_setup_turn");
+ void m3_receive(u32,u32,i32) __asm__("m3_receive");
+ u32 m3_step(u32,u32,u32) __asm__("m3_step");
++u32 m3_step_base(u32,u32,u32) __asm__("m3_step_base");
++u32 m3_stock_step(u32,u32,u32) __asm__("m3_stock_step");
+ u32 m3_project() __asm__("m3_project");
+ void m3_new() __asm__("m3_new");
+ void m3_stock_new() __asm__("m3_stock_new");
+@@ -312,8 +314,11 @@ void m3_receive(u32 base,u32 id,i32 value) {
+     const u32 t = u32(value) >> setup_bits, settings = u32(value) & setup_mask;
+     if (t < tracks && valid_setup(settings)) audio[t] = settings;
+ }
++u32 m3_stock_step(u32 project,u32 track,u32 position) {
++    return stock<u32(u32,u32,u32)>(0x8d5936c0)(project,track,position);
++}
+ u32 m3_step(u32 project,u32 track,u32 position) {
+-    const u32 result = stock<u32(u32,u32,u32)>(0x8d5936c0)(project,track,position);
++    const u32 result = m3_step_base(project,track,position);
+     if (track < m3_ui::tracks) m3_ui::publish_track(m3_ui::active(),track);
+     return result;
+ }
+diff --git a/tooling/native.py b/tooling/native.py
+index 36e742a..88b7e2c 100644
+--- a/tooling/native.py
++++ b/tooling/native.py
+@@ -137,8 +137,8 @@ def configuration(entries=None, layout=None):
+         require(probe.identity['effect'] == 11, 'Trine needs filter ID 11')
+         profile['m3_display_pages'] = trine_display_pages(profile, machines, layout)
+         enabled = active_services(profile, service_users(machines))
+-        require(not {'drum_locks', 'master_filter'}.intersection(enabled),
+-                'Trine shares firmware hooks with the drum-lock and master-filter services')
++        require('master_filter' not in enabled,
++                'Trine and the selected master processor both use receiver message 128')
+         for hook in profile['patches']:
+             replacements = {'sdk_master_receive': 'm3_receive', 'sdk_master_project': 'm3_project',
+                             'sdk_project_new': 'm3_new', 'sdk_lock_step': 'm3_step'}
+@@ -486,6 +486,10 @@ def absent_numbers(absent):
+             for suffix in number_suffixes(m.kind, m.kind == 'sample' and m.display != 'stock')}
+ 
+ 
++def trine_step_target(services):
++    return 'sdk_lock_step' if 'drum_locks' in services else 'm3_stock_step'
++
++
+ def link(directory, tools, profile, definitions, machines, selected, name='module', runtime_members=(),
+          chosen_extensions=None):
+     """Link the selected machines' objects and the chosen extensions' (all of them by
+@@ -500,6 +504,9 @@ def link(directory, tools, profile, definitions, machines, selected, name='modul
+     # Entry points of services the whole collection's shared objects (startup's
+     # included) call into but this selection doesn't link, as the builder resolves them.
+     used = active_services(profile, service_users(chosen))
++    if any(m.id == 'm3probe' for m in chosen):
++        # Resolve the wrapper against this link's actual selection, including fit links.
++        aliases['m3_step_base'] = trine_step_target(used)
+     for service, fallbacks in service_fallbacks(active_services(profile, service_users(machines))).items():
+         if service not in used:
+             aliases.update(fallbacks)
+@@ -678,6 +685,7 @@ def compile_collection(directory, toolchain, compiler, profile, machines, defini
+                   hardware_tested=False, cpu_timing_measured=False)
+     if trine_pages:
+         report['trine_display_pages'] = trine_pages
++        report['trine_step_target'] = trine_step_target(report['services'])
+     if runtime_members:
+         report['runtime'] = runtime_members
+     save_json(directory / 'compile-report.json', report)
+@@ -962,6 +970,10 @@ def check_module(directory, tools, profile, machines, profiling=True, runtime_me
+     hooks = {}
+     text = allocated['.text']
+     services = active_services(profile, service_users(machines))
++    if any(m.id == 'm3probe' for m in machines):
++        target = trine_step_target(services)
++        require(symbols['m3_step_base']['value'] == symbols[target]['value'],
++                'Trine sequencer handler differs from the linked service selection')
+     chosen = extensions.setting_edits(profile, build_settings(machines))
+     for patch in patch_profile['patches']:
+         fixed = fixed_after(patch, services, profiling, chosen)

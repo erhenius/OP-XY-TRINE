@@ -5,7 +5,7 @@ import subprocess
 import sys
 import tempfile
 
-REV = 'a07b08faeb58cc7e74cdbc8bd98f809a8ffd5159'
+REV = '28dd1a2e36599108c5eecf1a03f3b28601e50b39'
 HERE = Path(__file__).resolve().parent
 
 

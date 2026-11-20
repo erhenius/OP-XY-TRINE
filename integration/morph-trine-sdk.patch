@@ -1,0 +1,2433 @@
+diff --git a/builder/core.mjs b/builder/core.mjs
+index 739cb31..592d678 100644
+--- a/builder/core.mjs
++++ b/builder/core.mjs
+@@ -10,7 +10,7 @@ export const selectArtwork = Graphics.selectArtwork;
+ // The init preset's authored settings, shared with tooling.adapters.default_preset
+ // (write_builder inlines this same file's content for the offline export).
+ import DEFAULT_PRESET_TEMPLATE from '../tooling/default_preset.json' with { type: 'json' };
+-export const PROFILE_SHA256 = '6bd2a299b7490b01657119315361974ea317c80bcac99c088525b08ff3303181';
++export const PROFILE_SHA256 = 'c7ae53f73d943f8b57098761434b44027ad1bde3d982c99198e71a5b17a22b12';
+ export function requireThat(ok, message) { if (!ok) throw new Error(message); }
+ const check = requireThat;
+ const utf8 = new TextEncoder();
+diff --git a/docs/morph-bridge.md b/docs/morph-bridge.md
+new file mode 100644
+index 0000000..8572da4
+--- /dev/null
++++ b/docs/morph-bridge.md
+@@ -0,0 +1,82 @@
++# Experimental Morph bridge
++
++This proposal ports SDK support for the external Morph AUX machine to current
++`staging`. It is a compatibility bridge for review, not a catalog entry or a
++conversion to the generic extension API. The machine, Manager, custom builder
++UI, MultiFX implementation, firmware and generated releases are excluded.
++
++Morph captures stored parameter banks across eight tracks and offers an
++instrument-page HUD. Alongside existing control overlays it needs guarded
++stored-value transactions, physical input ownership, verified screen
++substitution and explicit GUI preset operations.
++
++## Interfaces
++
++| Header | Contract |
++| --- | --- |
++| `morph_aux_events.hpp` | Bounded read-and-clear encoder queue for the unique Morph owner on AUX track 11 |
++| `morph_store_bridge.hpp` | Stored-value sessions bound to project, scene, track blocks and SHIFT schema; recheck pending writes |
++| `morph_hud_overlay.hpp` | Optional screen/input callbacks; requested substitution does not authorize input |
++| `morph_hud_raw_turn.hpp` | A-bank pulse sampler; reset on ownership, track, module or modifier changes |
++| `morph_hud_slot_map.hpp` | M1 slots derived from installed SDK metadata, with basic stock-slot fallback |
++| `morph_hud_snapshot.hpp` | MS04 read-only snapshot for one instrument track, including stored filter model |
++| `morph_hud_contract.hpp` | Machine-side command types and authorization witness declarations |
++| `morph_midi_input.hpp` | Latest CC15 on track/channel 11; delegate unmatched messages to stock |
++| `morph_pad_input.hpp` | Change physical pad ownership on release; finish an existing gesture with its original owner |
++| `morph_preset_files.hpp` | Explicit GUI reads/writes of sixteen two-copy A/B preset slots; no background scan |
++
++State is plain zero-initialized C++11 storage. Stored writes are available only
++inside the unique owner's GUI control callback. Project/scene/block/schema
++changes invalidate sessions. The visual filter type uses stored block `+0x28`,
++as stock's GUI does, rather than the independently updated audio-side table.
++
++A read-only menu request suppresses paint slot 74 only when the compositor
++actually selected Morph's registered replacement. It changes no menu actions.
++A substituted source slot is guarded against accidental paint suppression.
++The standalone display preview reports snapshot-unavailable instead of
++fabricating captured values or input authorization.
++
++## Profile changes
++
++Two existing dispatch calls redirect under the control service:
++
++- `0x8d58e818`: MIDI CC parameter dispatch; unmatched traffic delegates unchanged.
++- `0x8d5b27f6`: physical pitch-pad receiver; MIDI/reset callers remain stock.
++
++Original patches, stock authentication, memory reservations and compiler pins
++are retained. `builder/core.mjs` changes only its profile digest to authenticate
++the two added entries; no builder functionality changes.
++
++## Checks and use
++
++Use the external Morph machine in a separate repository against this SDK branch.
++The PR includes no machine registration. Run:
++
++```sh
++python sdk.py check
++python -m unittest discover -s tests -p test_morph_bridge.py -v
++python -m unittest discover -s tests -p test_track_control.py -v
++python -m unittest discover -s tests -p test_sample_services.py -v
++```
++
++The hook-preimage test uses `OPXY_TEST_STOCK_OS` only when supplied privately,
++outside the checkout. Full native/release verification needs the complete
++fixtures listed in `build.md`; these host tests do not replace it.
++
++## Review decisions
++
++This compatibility port explicitly retains machine identity `morphcapture`,
++AUX host 11, page 219, menu slot 74, the MS04 snapshot shape and fixed preset
++format. These need review before a general public API is promised. A reusable
++interface should make ownership, registered-page identity, snapshot schema and
++storage policy generic; renaming the functions alone does not achieve that.
++
++Preset operations are explicit GUI actions, while generic extension callbacks
++normally forbid I/O. Stored-write policy and physical MIDI/pad events likewise
++need review against the SDK extension model. The contract remains experimental
++and source-level.
++
++The prior custom SDK/Morph combination was exercised on hardware. That does
++not qualify this port to newer upstream code. Native compilation, allocation,
++release verification, device regression and CPU profiling for this branch remain
++pending. This proposal does not claim catalog readiness.
+diff --git a/profiles/opxy-1.2.1.json b/profiles/opxy-1.2.1.json
+index b6c1de4..54659ea 100644
+--- a/profiles/opxy-1.2.1.json
++++ b/profiles/opxy-1.2.1.json
+@@ -2500,6 +2500,28 @@
+       "symbol": "sdk_drumline_page_hook",
+       "call": true,
+       "service": "drumline"
++    },
++    {
++      "kind": "hook",
++      "name": "Morph MIDI movement: intercept CC12-47 parameter dispatch; unmatched traffic delegates unchanged",
++      "address": "0x8d58e818",
++      "file_offset": "0x1c5a74",
++      "length": 4,
++      "before": "ffe3dbfe",
++      "symbol": "sdk_morph_midi_cc",
++      "call": true,
++      "service": "control"
++    },
++    {
++      "kind": "hook",
++      "name": "Morph physical pitch pad: preserve stock or consume for rate movement; MIDI callers unchanged",
++      "address": "0x8d5b27f6",
++      "file_offset": "0x1e9a4e",
++      "length": 4,
++      "before": "ffe37526",
++      "symbol": "sdk_morph_pad_event",
++      "call": true,
++      "service": "control"
+     }
+   ],
+   "compiler": "bfin-elf-gcc 8.0.0 (deanm1278/blackfin-plus-gnu e4408a1) + toolchain/gcc patches",
+diff --git a/sdk/host/display_preview.cpp b/sdk/host/display_preview.cpp
+index 988ba1e..38caa34 100644
+--- a/sdk/host/display_preview.cpp
++++ b/sdk/host/display_preview.cpp
+@@ -31,3 +31,9 @@ opxy::u32 opxy_display_valid() { return opxy::binding::display_valid(&frame); }
+ opxy::draw::SampleOverview* opxy_display_sample() { return &sample; }
+ opxy::draw::ShiftRow* opxy_display_shift() { return &shift_row; }
+ }
++
++// The standalone display preview has no captured controller scene.
++#include <opxy/morph_hud_snapshot.hpp>
++extern "C" bool sdk_morph_hud_snapshot_read(opxy::u32, morphcapture::hud::Snapshot*) {
++    return false;
++}
+diff --git a/sdk/include/opxy/morph_aux_events.hpp b/sdk/include/opxy/morph_aux_events.hpp
+new file mode 100644
+index 0000000..1c57a8e
+--- /dev/null
++++ b/sdk/include/opxy/morph_aux_events.hpp
+@@ -0,0 +1,28 @@
++// Morph v0.0.6 bridge layer A: physical AUX gesture queue. C++11.
++// Deliberately private: no changes to opxy::control::Input or stock SDK ABI.
++#pragma once
++#include <opxy/types.hpp>
++
++namespace opxy { namespace platform {
++struct MorphAuxEvents {
++    u32 clicks;
++    i32 turns[4];
++    void clear() { clicks = 0; for (u32 i=0; i<4; ++i) turns[i]=0; }
++    void click(u32 index) { if (index<4) clicks |= 1u << index; }
++    // Clamp each pending raw detent sum to 16-bit signed. Never overflow i32.
++    void turn(u32 index, i32 delta) {
++        if (index>=4) return;
++        const i32 safe = delta>32767 ? 32767 : delta < -32768 ? -32768 : delta;
++        const i32 sum = turns[index]+safe;
++        turns[index] = sum > 32767 ? 32767 : sum < -32768 ? -32768 : sum;
++    }
++    void take(u32* out_clicks, i32* out_turns) {
++        if (out_clicks) *out_clicks=clicks;
++        if (out_turns) for (u32 i=0;i<4;++i) out_turns[i]=turns[i];
++        clear();
++    }
++};
++}}
++
++// Consumer runs on Morph's GUI control tick; read-and-clear, no stock writes.
++extern "C" void sdk_morph_aux_events_take(opxy::u32 track, opxy::u32* clicks, opxy::i32* turns);
+diff --git a/sdk/include/opxy/morph_hud_contract.hpp b/sdk/include/opxy/morph_hud_contract.hpp
+new file mode 100644
+index 0000000..31ed26b
+--- /dev/null
++++ b/sdk/include/opxy/morph_hud_contract.hpp
+@@ -0,0 +1,21 @@
++// Experimental Morph HUD command types; no callback authorizes itself.
++#pragma once
++#include <opxy/types.hpp>
++namespace morphcapture { namespace hud {
++enum Action : opxy::u32 {
++ None=0u, CaptureTrackA=1u, CaptureTrackB=2u,
++ ToggleEdit=3u, JumpA=4u, JumpB=5u, LiveBypass=6u, SetS=7u
++};
++struct Event { opxy::u32 action, track; };
++inline bool action_valid(opxy::u32 a) { return a>=CaptureTrackA && a<=SetS; }
++inline bool event_valid(const Event& e) { return action_valid(e.action) && e.track<8u; }
++}}
++extern "C" {
++// A HUD compositor calls this only after its physical ownership gate.
++// A posted event is NOT automatically authorized: the consumer rechecks.
++bool sdk_morph_hud_event_offer(opxy::u32 action,opxy::u32 focused_track)
++    __asm__("sdk_morph_hud_event_offer");
++// The machine must recheck the actual compositor witness and current context.
++opxy::u32 sdk_morph_hud_frame_authorized(opxy::u32 track)
++    __asm__("sdk_morph_hud_frame_authorized");
++}
+diff --git a/sdk/include/opxy/morph_hud_overlay.hpp b/sdk/include/opxy/morph_hud_overlay.hpp
+new file mode 100644
+index 0000000..eb5207e
+--- /dev/null
++++ b/sdk/include/opxy/morph_hud_overlay.hpp
+@@ -0,0 +1,25 @@
++// Experimental Morph HUD callbacks, checked by the compositor.
++#pragma once
++#include <opxy/types.hpp>
++extern "C" {
++// Visual-only request. Honored only for an actually selected Morph replacement.
++extern bool (*sdk_morph_hud_hide_menu)() __asm__("sdk_morph_hud_hide_menu");
++extern void (*sdk_morph_scramble_done)(opxy::u32) __asm__("sdk_morph_scramble_done");
++opxy::u32 sdk_morph_gui_route_trace(opxy::u32 index) __asm__("sdk_morph_gui_route_trace");
++void sdk_morph_gui_turns_reset() __asm__("sdk_morph_gui_turns_reset");
++extern opxy::u32 (*sdk_morph_hud_substitute)(opxy::u32) __asm__("sdk_morph_hud_substitute");
++opxy::u32 sdk_morph_track_held(opxy::u32 track) __asm__("sdk_morph_track_held");
++opxy::u32 sdk_morph_gui_track() __asm__("sdk_morph_gui_track");
++opxy::u32 sdk_morph_gui_module() __asm__("sdk_morph_gui_module");
++opxy::u32 sdk_morph_gui_key_down(opxy::u32 key) __asm__("sdk_morph_gui_key_down");
++opxy::u32 sdk_morph_gui_encoder_down(opxy::u32 index) __asm__("sdk_morph_gui_encoder_down");
++extern bool (*sdk_morph_hud_press_route)(opxy::u32) __asm__("sdk_morph_hud_press_route");
++extern bool (*sdk_morph_hud_turn_suppress)(opxy::u32) __asm__("sdk_morph_hud_turn_suppress");
++extern bool (*sdk_morph_hud_raw_turn_route)(opxy::u32,opxy::u32,opxy::i32,opxy::u32)
++    __asm__("sdk_morph_hud_raw_turn_route");
++opxy::u32 sdk_morph_gui_ready() __asm__("sdk_morph_gui_ready");
++opxy::u32 sdk_morph_gui_shift_held() __asm__("sdk_morph_gui_shift_held");
++opxy::u32 sdk_morph_other_track_held(opxy::u32 track) __asm__("sdk_morph_other_track_held");
++extern void (*sdk_morph_hud_frame_witness)(opxy::u32,opxy::u32)
++    __asm__("sdk_morph_hud_frame_witness");
++}
+diff --git a/sdk/include/opxy/morph_hud_raw_turn.hpp b/sdk/include/opxy/morph_hud_raw_turn.hpp
+new file mode 100644
+index 0000000..37bb650
+--- /dev/null
++++ b/sdk/include/opxy/morph_hud_raw_turn.hpp
+@@ -0,0 +1,27 @@
++// Morph v0.0.6: physical A-bank pulse decoder. GUI-only, plain POD.
++// Mirrors V1's two signed raw pulses per detent. Not a stock-turn index.
++#pragma once
++#include <opxy/types.hpp>
++namespace morph_raw_turn {
++using opxy::u32; using opxy::i32;
++struct Sampler {
++ u32 previous[4]; i32 half[4];
++ u32 primed,shift,k4;
++ void reset() { for(u32 i=0;i<4u;++i){previous[i]=0u;half[i]=0;}primed=0u;shift=0u;k4=0u; }
++ void sample(const u32 (&raw)[4], bool shifted,bool k4held,i32 (&steps)[4]) {
++  for(u32 i=0;i<4u;++i)steps[i]=0;
++  if(!primed || shift!=(shifted?1u:0u) || k4!=(k4held?1u:0u)) {
++   for(u32 i=0;i<4u;++i){previous[i]=raw[i];half[i]=0;}
++   primed=1u;shift=shifted?1u:0u;k4=k4held?1u:0u;return;
++  }
++  for(u32 i=0;i<4u;++i){
++   const u32 now=raw[i],prior=previous[i];previous[i]=now;
++   if(now==prior || now==0u)continue;
++   half[i]+=(now&0x80000000u)?-1:1;
++   if(half[i]>=2){steps[i]=1;half[i]-=2;}
++   else if(half[i]<=-2){steps[i]=-1;half[i]+=2;}
++  }
++ }
++};
++static_assert(sizeof(Sampler)==44u,"raw pulse sampler size changed");
++}
+diff --git a/sdk/include/opxy/morph_hud_slot_map.hpp b/sdk/include/opxy/morph_hud_slot_map.hpp
+new file mode 100644
+index 0000000..22c5a44
+--- /dev/null
++++ b/sdk/include/opxy/morph_hud_slot_map.hpp
+@@ -0,0 +1,27 @@
++// M1 matches the original V1 SDK selector: stock slots 0..3, metadata-driven SDK alternates.
++#pragma once
++#include <opxy/types.hpp>
++namespace morph_m1 {
++using opxy::u32;
++const u32 kMissing=0xffffffffu;
++struct Map {
++ u32 primary[4];
++ u32 alternate[4];
++ u32 shown[4];
++ u32 dual;
++ u32 secondary;
++};
++inline void clear(Map& m) {
++ for(u32 i=0;i<4u;++i) m.primary[i]=m.alternate[i]=m.shown[i]=kMissing;
++ m.dual=0u;m.secondary=0u;
++}
++inline bool in_supported_bank(u32 slot) {return slot<8u;}
++inline bool supported_for_edit(const Map& m,u32 position,u32& out) {
++ if(position>=4u || !in_supported_bank(m.shown[position]))return false;
++ out=m.shown[position];return true;
++}
++}
++extern "C" bool sdk_morph_hud_m1_map(opxy::u32, morph_m1::Map*)
++ __asm__("sdk_morph_hud_m1_map");
++extern "C" bool sdk_morph_hud_m1_toggle(opxy::u32)
++ __asm__("sdk_morph_hud_m1_toggle");
+diff --git a/sdk/include/opxy/morph_hud_snapshot.hpp b/sdk/include/opxy/morph_hud_snapshot.hpp
+new file mode 100644
+index 0000000..8c4e17b
+--- /dev/null
++++ b/sdk/include/opxy/morph_hud_snapshot.hpp
+@@ -0,0 +1,37 @@
++// Morph / Open-XY v0.0.6, Gate 8. Read-only V1 HUD scene publication.
++// This ABI carries A, S, B, currently stored values and travel for one track.
++// No screen or physical shortcut is enabled by this interface.
++#pragma once
++#include <opxy/types.hpp>
++#include <opxy/morph_hud_slot_map.hpp>
++namespace morphcapture { namespace hud {
++const opxy::u32 kSnapshotSlots=26u;
++const opxy::u32 kSnapshotABI=0x4d533034u; // MS04
++struct Snapshot {
++ opxy::u32 abi;
++ opxy::u32 track;
++ opxy::u32 captured_a;
++ opxy::u32 captured_b;
++ opxy::u32 start_ready;
++ opxy::u32 edit_side; // A=0, B=1; red highlight is edit target, not audible side
++ opxy::u32 module; // stock M1=0, M2=1, M3=2; GUI snapshot only
++ morph_m1::Map m1; // verified SDK-owned M1 mapping, absent otherwise
++ opxy::u32 shifted; // authorized Track-first or latched SHIFT view
++ opxy::u32 bank_focus; // 0=AMP, 1=FILTER, real K1 selection
++ opxy::u32 mode; // 0=BYPASS, 1=LIVE
++ opxy::i32 travel; // [-64,+64] with 0 as picked-up CURRENT, not S mid-point
++ opxy::u32 phase;
++ opxy::u32 fault;
++ opxy::u32 filter_type;
++ opxy::i32 playmode, bendrange;
++ opxy::i32 a[kSnapshotSlots];
++ opxy::i32 s[kSnapshotSlots];
++ opxy::i32 b[kSnapshotSlots];
++ opxy::i32 current[kSnapshotSlots];
++};
++static_assert(sizeof(Snapshot)==536u,"Morph V1 HUD snapshot ABI changed");
++}}
++extern "C" bool sdk_morph_hud_snapshot_read(opxy::u32 track, morphcapture::hud::Snapshot* out)
++    __asm__("sdk_morph_hud_snapshot_read");
++
++extern "C" bool sdk_morph_view_visual_batch(opxy::u32 track,const opxy::u32* indices,opxy::i32* out,opxy::u32* filter,opxy::i32* play,opxy::i32* bend) __asm__("sdk_morph_view_visual_batch");
+diff --git a/sdk/include/opxy/morph_midi_input.hpp b/sdk/include/opxy/morph_midi_input.hpp
+new file mode 100644
+index 0000000..ca81520
+--- /dev/null
++++ b/sdk/include/opxy/morph_midi_input.hpp
+@@ -0,0 +1,15 @@
++// Private Morph MIDI event access. GUI-side stock CC dispatch only. C++11.
++#pragma once
++#include <opxy/types.hpp>
++namespace opxy { namespace morphmidi {
++inline bool matches(u32 track,u32 cc,u32 value){return track==11u && cc==15u && value<=127u;}
++struct Latest {
++ u32 value,epoch;bool pending;
++ void clear(){pending=false;}
++ void offer(u32 next,u32 generation){value=next;epoch=generation;pending=true;}
++};
++}}
++extern "C" void sdk_morph_midi_cc(opxy::u32 track,opxy::u32 cc,opxy::u32 value)
++    __asm__("sdk_morph_midi_cc");
++extern "C" bool sdk_morph_midi_take(opxy::u32* value);
++extern "C" void sdk_morph_midi_clear();
+diff --git a/sdk/include/opxy/morph_pad_input.hpp b/sdk/include/opxy/morph_pad_input.hpp
+new file mode 100644
+index 0000000..2c6b901
+--- /dev/null
++++ b/sdk/include/opxy/morph_pad_input.hpp
+@@ -0,0 +1,25 @@
++// Physical-pad ownership only. MIDI reception never enters this adapter.
++#pragma once
++#include <opxy/types.hpp>
++namespace opxy { namespace morphpad {
++struct Input {
++ bool requested,owned; i32 pressure;
++ void request(bool next,i32 current) {
++  requested=next;pressure=current;
++  if(!current)owned=requested;
++ }
++ // Decide using ownership BEFORE release: finish a stock gesture in stock,
++ // and consume the release of a Morph gesture without touching MIDI pitch.
++ bool event(i32 value) {
++  const bool consume=owned;pressure=value;
++  if(!value)owned=requested;
++  return consume;
++ }
++};
++}}
++extern "C" void sdk_morph_pad_event(opxy::u32,opxy::u32,opxy::i32,opxy::u32)
++ __asm__("sdk_morph_pad_event");
++extern "C" void sdk_morph_pad_request(bool);
++extern "C" bool sdk_morph_pad_read(opxy::i32*);
++
++extern "C" bool sdk_morph_pad_waiting();
+diff --git a/sdk/include/opxy/morph_preset_files.hpp b/sdk/include/opxy/morph_preset_files.hpp
+new file mode 100644
+index 0000000..71eeed5
+--- /dev/null
++++ b/sdk/include/opxy/morph_preset_files.hpp
+@@ -0,0 +1,6 @@
++#pragma once
++#include <opxy/types.hpp>
++// Private Morph GUI-only file bridge. Fixed paths, bounded payload, no audio I/O.
++// Read returns byte count (capacity+1 flags an overlong file); zero means failure.
++extern "C" opxy::u32 sdk_morph_preset_read(opxy::u32 slot,opxy::u32 copy,opxy::u8* data,opxy::u32 capacity);
++extern "C" bool sdk_morph_preset_write(opxy::u32 slot,opxy::u32 copy,const opxy::u8* data,opxy::u32 bytes);
+diff --git a/sdk/include/opxy/morph_store_bridge.hpp b/sdk/include/opxy/morph_store_bridge.hpp
+new file mode 100644
+index 0000000..5a67dc1
+--- /dev/null
++++ b/sdk/include/opxy/morph_store_bridge.hpp
+@@ -0,0 +1,77 @@
++// Morph v0.0.6 private stored-CURRENT / BASE-guard building blocks.
++// C++11, zero-initialized POD only: the stock Blackfin loader does not run C++ constructors.
++#pragma once
++#include <opxy/types.hpp>
++namespace opxy { namespace morphport {
++inline bool supported(u32 p) {
++    return (p>=64u && p<72u) || p<=11u || p==13u || p==15u || (p>=16u && p<=23u) || (p>=32u && p<=35u);
++}
++struct ShiftSchema {
++ u32 engine;
++ u8 count, choices[8], defaults[8];
++};
++struct Session {
++ u32 aux_block;
++ ShiftSchema shift[8];
++    u32 project;
++    u32 scene;
++    u32 blocks[8];
++    bool active;
++    void clear() { active=false; }
++    void begin(u32 p,u32 sc,const u32* b) {
++        active=false;
++        project=p;scene=sc;
++        for(u32 t=0;t<8u;++t)blocks[t]=b[t];
++        active=true;
++    }
++    bool matches(u32 p,u32 sc,const u32* b) const {
++        if(!active || !p || project!=p || scene!=sc)return false;
++        for(u32 t=0;t<8u;++t)
++            if(!b[t] || b[t]!=blocks[t])return false;
++        return true;
++    }
++};
++struct Pending {
++    u32 block;
++    i32 current;
++    bool accepted;
++};
++}}
++
++// PRIVATE SDK bridge, available only inside an authorized Morph control callback.
++// Stored write acceptance means added to the v0.0.6 Overlay::stored queue.
++// It does not claim that the value was applied until subsequent readback.
++extern "C" bool sdk_morph_stored_current_read(opxy::u32 track,opxy::u32 index,opxy::i32* out);
++extern "C" bool sdk_morph_stored_once_submit(opxy::u32 track,opxy::u32 index,opxy::i32 value);
++extern "C" opxy::u32 sdk_morph_stored_once_take_feedback();
++extern "C" bool sdk_morph_session_context_begin();
++extern "C" bool sdk_morph_session_context_ok();
++extern "C" void sdk_morph_session_context_end();
++extern "C" bool sdk_morph_setbase_context_begin();
++extern "C" bool sdk_morph_setbase_context_ok();
++extern "C" bool sdk_morph_setbase_current_read(opxy::u32 track,opxy::u32 index,opxy::i32* out);
++extern "C" void sdk_morph_setbase_context_end();
++extern "C" opxy::u32 sdk_morph_setbase_take_feedback();
++
++// GUI-thread inspection outside control(). Never call from the audio thread.
++// Read-only: does not begin sessions or permit stored writes.
++extern "C" bool sdk_morph_view_context_ok();
++extern "C" bool sdk_morph_view_current_read(opxy::u32 track,opxy::u32 index,opxy::i32* out);
++
++// All-or-nothing GUI read of at most 26 supported slots; out unchanged on refusal.
++extern "C" bool sdk_morph_view_current_batch(opxy::u32 track,const opxy::u32* indices,
++                                            opxy::u32 count,opxy::i32* out);
++
++// Explicit physical movement only: records the AUX lane, never destination writes.
++extern "C" bool sdk_morph_movement_record(opxy::i32 value);
++
++extern "C" bool sdk_morph_persist_identity(opxy::morphport::ShiftSchema* schemas,opxy::u32* patterns);
++
++
++extern "C" bool sdk_morph_movement_has_locks();
++
++extern "C" bool sdk_morph_movement_lfo_active();
++
++extern "C" bool sdk_morph_stored_batch_read(opxy::u32 track,const opxy::u32* indices,opxy::u32 count,opxy::i32* out);
++
++extern "C" bool sdk_morph_view_visual_batch(opxy::u32 track,const opxy::u32* indices,opxy::i32* out,opxy::u32* filter,opxy::i32* play,opxy::i32* bend) __asm__("sdk_morph_view_visual_batch");
+diff --git a/sdk/platform/opxy-1.2.1/aux_tracks.cpp b/sdk/platform/opxy-1.2.1/aux_tracks.cpp
+index a75b7ea..bfc3a15 100644
+--- a/sdk/platform/opxy-1.2.1/aux_tracks.cpp
++++ b/sdk/platform/opxy-1.2.1/aux_tracks.cpp
+@@ -56,6 +56,7 @@
+ //   held. When the track is taken, the audio side clears stock's held CV notes
+ //   (8d5b59a0) and lowers the gate (8d5b5f78(0)) once.
+ #include "track_control.hpp"
++#include <opxy/morph_aux_events.hpp>
+ #include "stock.hpp"
+ #include "stock_browser.hpp"
+ #include "synth_controls.hpp"
+@@ -148,6 +149,23 @@ const ControlMachine* holder(u32 track) {
+     return takeable(track) ? machine_for(track, word(current_block(track) + 0x18)) : nullptr;
+ }
+ 
++// Morph-only event queue. The name is generated from the machine ID and
++// stays stable if v0.0.6 chooses a different numeric engine number.
++MorphAuxEvents morph_events = {};
++bool morph_name(const char* found) {
++    const char wanted[] = "morphcapture";
++    if (!found) return false;
++    for (u32 i=0; i<sizeof wanted; ++i)
++        if (found[i] != wanted[i]) return false;
++    return true;
++}
++bool morph_owns_m1(const ControlMachine* owner, u32 track) {
++    return track == 11u && byte(kSelectedTrack)==11u && owner && owner->unique &&
++           morph_name(owner->name) && opxy::control::copies(11u)==1u &&
++           word(kAuxTab)==0u;
++}
++// Delivery is restricted to the live owner, not merely the last owner.
++// No caller may consume stale events after a project/machine switch.
+ i32 base(u32 track, u32 index) {
+     return static_cast<i32>(word(stock<u32(u32)>(0x8d587708)(track) + 0x3864 + index * 4));
+ }
+@@ -483,6 +501,7 @@ u32 aux_engine(u32 track) {
+ }
+ 
+ void aux_tick() {
++    if (word(kProjectLoading) || !morph_owns_m1(holder(11u),11u)) morph_events.clear();
+     // While stock loads a project, only the marks: the old project still plays.
+     const bool loading = word(kProjectLoading);
+     for (u32 t = kFirstAux; t < control::all_tracks; ++t) {
+@@ -558,12 +577,26 @@ u32 sdk_aux_key(u32 controller, const u32* event) {
+     if (!m || !event) return 0;
+     const u32 key = event[0];
+     if (key >= 6 && key <= 9) {
++        // Keys outside modules/encoders/tracks (e.g. BAR) retain stock chords.
++        // Do not steal BAR+M2 (clear params) or BAR+M4 (clear all).
++        for(u32 other=22u;morph_name(m->name) && other<50u;++other)
++            if(stock<u32(u32)>(0x8d5b7d7cu)(other))return 0;
++
+         if (key == 9 && m->shared_lfo) return 0;
+-        if (key == 6) stock<void(u32, u32)>(0x8c08f74c)(controller, 0);
++        if (key == 6 || ((key == 7 || key == 8) && morph_name(m->name))) {
++            morph_events.clear();
++            stock<void(u32, u32)>(0x8c08f74c)(controller, 0);
++        }
+         sdk_synth_queue_page_key(track, key - 5);
+         return 1;
+     }
+-    return key >= 10 && key <= 13 && owns_page(track) ? 2 : 0;
++    if (key >= 10 && key <= 13 && owns_page(track)) {
++        // Only Morph on CV/M1 captures clicks. Other aux machines are unchanged.
++        const ControlMachine* owner = holder(track);
++        if (morph_owns_m1(owner, track)) morph_events.click(key - 10);
++        return 2;
++    }
++    return 0;
+ }
+ 
+ // Before stock translates a tab to CV parameter indices. The SDK editor
+@@ -571,10 +604,28 @@ u32 sdk_aux_key(u32 controller, const u32* event) {
+ u32 sdk_aux_turn(u32, u32 encoder, u32 event) {
+     const u32 track = byte(kSelectedTrack);
+     if (!owns_page(track)) return 0;
+-    if (encoder < 8) sdk_effect_turn(kProject, track, encoder % 4, event);
++    if (encoder < 8) {
++        const ControlMachine* owner = holder(track);
++        if (morph_owns_m1(owner, track)) {
++            // Raw signed detents, independent from stock's clamped parameter.
++            if (event) morph_events.turn(encoder % 4, reinterpret_cast<const i32*>(event)[0]);
++            // Preserve Morph V1's exact no-stock-editor guard on AUX M1.
++            return 1;
++        }
++        sdk_effect_turn(kProject, track, encoder % 4, event);
++    }
+     return 1;
+ }
+ 
++// PRIVATE BRIDGE: read and clear one GUI frame's Morph-only gestures.
++extern "C" void sdk_morph_aux_events_take(opxy::u32 track, opxy::u32* clicks, opxy::i32* turns) {
++    if (clicks) *clicks = 0u;
++    if (turns) for (u32 i=0;i<4u;++i) turns[i]=0;
++    const ControlMachine* owner = holder(track);
++    if (!morph_owns_m1(owner,track)) { morph_events.clear(); return; }
++    morph_events.take(clicks,turns);
++}
++
+ // 8d53d2a0: the name of the aux LFO's engine destination `slot` (0..3, the
+ // track's words 0..3) while a machine holds `track`: that parameter's name in
+ // the machine's engine record, as an instrument track's LFO shows it; else 0
+@@ -652,6 +703,7 @@ void aux_forget() {
+ // companion and synth_controls.cpp, a shared unit, reach this service through
+ // these pointers only.
+ void sdk_aux_startup() {
++    morph_events.clear();
+     sdk_aux = AuxService{aux_engine, aux_tick, aux_kept, aux_restore, aux_forget};
+     sdk_aux_engine = aux_engine;
+     sdk_aux_owns_page = owns_page;
+diff --git a/sdk/platform/opxy-1.2.1/m3_probe.cpp.in b/sdk/platform/opxy-1.2.1/m3_probe.cpp.in
+new file mode 100644
+index 0000000..2e59376
+--- /dev/null
++++ b/sdk/platform/opxy-1.2.1/m3_probe.cpp.in
+@@ -0,0 +1,154 @@
++// OS 1.2.1 instrument resonator. The stock filter registrar populates
++// the per-voice factory table and its name map, independently of send FX.
++#include "registration.hpp"
++// The FX build carrier has no separate authored source-unit slot.
++#include "resonator.cpp"
++
++using opxy::u32;
++using opxy::i32;
++using opxy::platform::Address;
++using opxy::platform::Record;
++using opxy::platform::at;
++using opxy::platform::stock;
++
++extern "C" {
++extern const char m3probe_fx_id[] __asm__("m3probe_fx_id");
++extern const char m3probe_fx_factory[] __asm__("m3probe_fx_factory");
++extern const char m3probe_fx_parameter_name[] __asm__("m3probe_fx_parameter_name");
++int m3probe_fx_register() __asm__("m3probe_fx_register");
++int m3probe_ready() __asm__("m3probe_ready");
++void m3probe_filter_init(u32, const char*, const char*, const char*, u32)
++    __asm__("m3probe_filter_init");
++}
++
++#include "m3_setup_ui.hpp"
++
++namespace {
++const Address kFilterRecords = 0x08039b2c;
++const u32 kRegisterFilter = 0x8d50673c;
++const u32 kStockSvf = 10;
++const u32 kStockSvfFactory = 0x8d51c058;
++const Address kStockSvfMethods = 0x8405307c;
++const u32 kStockVoiceCount = 128;
++const u32 kStockSlotBytes = 0x90;
++const unsigned kFilterControlOffset = 16;
++const u32 kProbeId = 11;
++const u32 kInstrumentFilterPage = 3;
++const u32 kRecordWords = 12;
++const u32 kNameBytes = 32;
++using m3_resonator::Mode;
++
++using Registrar = void(u32, const char*, const char*, const char*, u32);
++
++const volatile u32* row(u32 id) {
++    return at<const volatile u32>(kFilterRecords) + id * kRecordWords;
++}
++
++unsigned probe_id() { return reinterpret_cast<Address>(m3probe_fx_id); }
++
++bool name_matches(const volatile u32* record, const char* name, u32 size) {
++    const volatile char* field = reinterpret_cast<const volatile char*>(record + 4);
++    for (u32 i = 0; i < kNameBytes; ++i) {
++        if (field[i] != (i < size ? name[i] : 0)) return false;
++    }
++    return true;
++}
++
++bool empty(const volatile u32* record) {
++    for (u32 i = 0; i < kRecordWords; ++i) {
++        if (record[i] != 0) return false;
++    }
++    return true;
++}
++
++struct FilterObject {
++    const void* const* methods;
++    m3_resonator::Voice voice;
++};
++
++static_assert(sizeof(FilterObject) <= kStockSlotBytes, "Resonator exceeds stock filter slot");
++m3_resonator::Coefficients caches[2] = {};
++
++m3_resonator::Coefficients& cache_for(const FilterObject* object) {
++    return caches[static_cast<unsigned>(object->voice.mode)];
++}
++
++m3_resonator::Parameters read_controls(const i32* track) {
++    // The stock SVF consumes these same four M3 track words.
++    const i32* controls = track + kFilterControlOffset;
++    return {{controls[0], controls[1], controls[2], controls[3]}};
++}
++
++m3_resonator::Excitation voices[kStockVoiceCount];
++unsigned voice_slot(const FilterObject* o) {
++    return (reinterpret_cast<Address>(o) - 0x84c6239c) / kStockSlotBytes;
++}
++void audio_block(FilterObject* o, i32* block, const i32* track, i32 key, bool stereo) {
++    const unsigned slot = voice_slot(o);
++    if (slot >= kStockVoiceCount) return;
++    const Address offset = reinterpret_cast<Address>(track) - 0x84eab39c;
++    const unsigned track_number = offset / 0xe8;
++    const unsigned word = track_number < 8 && offset % 0xe8 == 0 ? m3_ui::audio[track_number] : 0;
++    m3_resonator::perform(o->voice, cache_for(o), read_controls(track), block, voices[slot],
++                          m3_resonator::unpack(word), stereo, m3_resonator::played_note(key));
++}
++void mono(FilterObject* o, i32* block, const i32* track, i32 key, i32) { audio_block(o, block, track, key, false); }
++void stereo(FilterObject* o, i32* block, const i32* track, i32 key, i32) { audio_block(o, block, track, key, true); }
++void reset(FilterObject* o, u32) {
++    const unsigned slot = voice_slot(o);
++    if (slot < kStockVoiceCount) voices[slot] = {};
++    m3_resonator::reset(o->voice);
++}
++
++// Retain the stock SVF's untouched entries. Only the voice processing and
++// reset entries use the new state in the same pool slot.
++const void* const kResonatorMethods[10] = {
++    reinterpret_cast<const void*>(0x8d51c0c2), reinterpret_cast<const void*>(0x8d51c0d8),
++    reinterpret_cast<const void*>(&mono), reinterpret_cast<const void*>(&stereo),
++    reinterpret_cast<const void*>(0x8d5006a4), reinterpret_cast<const void*>(&reset),
++    reinterpret_cast<const void*>(0x8d51bc20), reinterpret_cast<const void*>(0x8d500684),
++    nullptr, nullptr
++};
++
++void* resonator_factory(u32 index, u32 track) {
++    if (index >= kStockVoiceCount) return nullptr;
++    auto object = stock<FilterObject*(u32, u32)>(kStockSvfFactory)(index, track);
++    if (object && object->methods == at<const void* const>(kStockSvfMethods)) {
++        object->methods = kResonatorMethods;
++        reset(object, 0);
++    }
++    return object;
++}
++
++const char kFilterName[] = "trine";
++}
++
++int m3probe_ready() {
++    const volatile u32* svf = row(kStockSvf);
++    const volatile u32* probe = row(kProbeId);
++    return probe_id() == kProbeId && svf[0] == kStockSvfFactory &&
++           probe[0] == reinterpret_cast<Address>(resonator_factory) &&
++           probe[1] == reinterpret_cast<Address>(m3probe_fx_parameter_name) &&
++           probe[3] == svf[3] && name_matches(probe, kFilterName, sizeof(kFilterName)-1);
++}
++
++int m3probe_fx_register() {
++    if (probe_id() != kProbeId) return 0;
++    const Record record = {m3probe_fx_factory, m3probe_fx_parameter_name, kFilterName,
++                           m3probe_fx_id, at<const char>(kInstrumentFilterPage), 0};
++    return sdk_register_effect(&record) > 0;
++}
++
++void m3probe_filter_init(u32 id, const char* name, const char* factory,
++                         const char* parameters, u32 page) {
++    const auto register_filter = stock<Registrar>(kRegisterFilter);
++    // Reproduce the final stock registration (Dynamic) with its original ABI.
++    register_filter(id, name, factory, parameters, page);
++    const volatile u32* svf = row(kStockSvf);
++    if (probe_id() != kProbeId || svf[0] != kStockSvfFactory ||
++        !name_matches(svf, "svf", 3)) return;
++    if (empty(row(kProbeId))) {
++        register_filter(kProbeId, kFilterName, reinterpret_cast<const char*>(resonator_factory),
++                        m3probe_fx_parameter_name, svf[3]);
++    }
++}
+diff --git a/sdk/platform/opxy-1.2.1/m3_setup_ui.hpp b/sdk/platform/opxy-1.2.1/m3_setup_ui.hpp
+new file mode 100644
+index 0000000..4561128
+--- /dev/null
++++ b/sdk/platform/opxy-1.2.1/m3_setup_ui.hpp
+@@ -0,0 +1,361 @@
++// Included in the generated registration translation unit for this isolated build.
++#include "screen.hpp"
++#include "resonator.hpp"
++#include "sweep_display.hpp"
++namespace m3_ui {
++using namespace opxy;
++using namespace opxy::platform;
++using namespace m3_resonator;
++constexpr u32 tracks = 8, patterns = 16, slots = tracks * patterns;
++constexpr u32 pattern_bytes = 0x53f4, track_bytes = 0x53f44;
++constexpr u32 clipboard = 0x84ffd208, private_message = 128;
++constexpr u32 setup_page = 82, main_page = 83;
++constexpr u32 initial_settings = unsigned(Exciter::Pulse);
++struct Settings { u32 word[slots]; };
++Settings saved, pending;
++u32 pending_project, menu_pattern, last_sent[tracks];
++u32 render_page;
++bool sent[tracks];
++u32 copied;
++u32 audio[tracks];
++u32 active() { return word(0x840a0524); }
++u32 pattern_for(u32 t) { return stock<u32(u32)>(0x8d587708)(t); }
++int index_of(u32 project, u32 pointer) {
++    if (!project || pointer < project + 0xd7c) return -1;
++    const u32 offset = pointer - project - 0xd7c;
++    if (offset >= tracks * track_bytes) return -1;
++    const u32 track = offset / track_bytes, within = offset % track_bytes;
++    if (within % pattern_bytes || within >= patterns * pattern_bytes) return -1;
++    return int(track * patterns + within / pattern_bytes);
++}
++bool context(u32 track) {
++    if (track >= tracks || track != byte(kSelectedTrack) || word(0x080238bc) != 2 || word(kScreen) != 0) return false;
++    auto controller = stock<const u32*()>(0x8c0944b0)();
++    return controller && *controller == 0x8400dff8 && stock<u32(u32)>(0x8d5878d4)(track) == 11;
++}
++bool plain() { return !stock<u32(u32)>(0x8d5b7d7c)(14u + byte(kSelectedTrack)) && !shift_held() && !stock<u32()>(0x8d5b7e34)(); }
++void send(u32 track, u32 value) {
++    if (!sent[track] || last_sent[track] != value) {
++        stock<void(u32,i32)>(0x8d4dc84c)(private_message, i32((track << setup_bits) | value));
++        sent[track] = true;
++        last_sent[track] = value;
++    }
++}
++void publish_track(u32 project,u32 track) {
++    const u32 playing = stock<u32(u32)>(0x8d586014)(track);
++    const int slot = index_of(project, playing);
++    if (slot >= 0) send(track, saved.word[slot]);
++}
++void refresh() {
++    const u32 project = active();
++    if (!project || word(0x840a0528)) return;
++    for (u32 t = 0; t < tracks; ++t) publish_track(project,t);
++}
++bool menu(u32 t) {
++    if (menu_pattern && (!context(t) || menu_pattern != pattern_for(t))) menu_pattern = 0;
++    return menu_pattern != 0;
++}
++namespace {
++using namespace opxy::screen;
++void number(char* out, unsigned value, const char* suffix) {
++    if (value >= 10000) *out++ = char('0' + value / 10000);
++    if (value >= 1000) *out++ = char('0' + value / 1000 % 10);
++    if (value >= 100) *out++ = char('0' + value / 100 % 10);
++    if (value >= 10) *out++ = char('0' + value / 10 % 10);
++    *out++ = char('0' + value % 10);
++    do { *out++ = *suffix; } while (*suffix++);
++}
++void interval(char* out, int value) {
++    if (value > 0) *out++ = '+';
++    if (value < 0) *out++ = '-';
++    number(out, unsigned(value < 0 ? -value : value), "");
++}
++void write_text(Leaf* node, const char* value) {
++    if (node) opxy::screen::set_text(node,value);
++}
++
++struct Renderer {
++    struct Object {
++        Base base;
++        u32 shown;
++        Leaf *first, *second, *routing, *placement;
++        PathNode* icons[5];
++        PathNode* blend;
++        u16 shades[19];
++        u16 padding;
++    };
++    static void init(Object* o) {
++        clear(o);
++        o->shown = ~0u;
++        if (!o->base.svg) return;
++        o->first = text_node(find(&o->base,"first"));
++        o->second = text_node(find(&o->base,"second"));
++        o->routing = text_node(find(&o->base,"routing"));
++        o->placement = text_node(find(&o->base,"placement"));
++        o->blend = path_node(find(&o->base,"blend"));
++        char id[] = "icon0";
++        for (u32 i = 0; i < 5; ++i) {
++            id[4] = char('0' + i);
++            o->icons[i] = path_node(find(&o->base,id));
++        }
++        for (u32 i = 0; i < 19; ++i) {
++            char name[10] = "shade";
++            number(name + 5,i,"");
++            auto donor = path_node(find(&o->base,name));
++            if (donor) o->shades[i] = donor->fill;
++        }
++    }
++    static void shade(PathNode* p, u16 id) {
++        if (p && id && p->fill != id) {
++            set_fill(p,id);
++            invalidate(p);
++        }
++    }
++    static void frame(Object* o, i32) {
++        if (render_page != setup_page || !o->base.svg) return;
++        const int slot = index_of(active(),menu_pattern);
++        if (slot < 0) return;
++        const u32 value = saved.word[slot];
++        if (o->shown != value) {
++            const Setup s = unpack(value);
++            char first[5], second[5];
++            interval(first,s.interval1);
++            interval(second,s.interval2);
++            write_text(o->first,first);
++            write_text(o->second,second);
++            write_text(o->routing,s.mode == Mode::Wide ? "Wide" : "Bypass");
++            write_text(o->placement,s.whole ? "Whole" : "Resonator");
++            for (u32 i = 0; i < 5; ++i)
++                shade(o->icons[i],o->shades[unsigned(s.exciter) == i + unsigned(Exciter::Pulse)]);
++            shade(o->blend,o->shades[2 + (s.blend * 16 + 50) / 100]);
++            o->shown = value;
++        }
++        draw(&o->base);
++    }
++};
++
++struct MainRenderer {
++    struct Object {
++        Base base;
++        PathNode *response, *badge;
++        Leaf *q, *duration, *type;
++        u32 shown;
++        i32 current[4];
++    };
++    static void init(Object* o) {
++        clear(o);
++        if (!o->base.svg) return;
++        o->response = path_node(find(&o->base,"sweep_curve"));
++        o->badge = path_node(find(&o->base,"badge"));
++        o->q = text_node(find(&o->base,"q"));
++        o->duration = text_node(find(&o->base,"duration"));
++        o->type = text_node(find(&o->base,"type"));
++        if (o->q) anchor_middle(o->q);
++    }
++    static void position(Leaf* node, i32 x, i32 y) {
++        const u32 at[] = {6,7};
++        const i32 values[] = {x * 1024,y * 1024};
++        if (node) set_words(node,at,values);
++    }
++    static void update_curve(Object* o) {
++        PathNode* curve = o->response;
++        if (!curve) return;
++        const Vector& v = curve->commands;
++        constexpr u32 points = m3_display::curve_points;
++        if (!ordered(v) || (v.begin & 3) || v.end - v.begin != sizeof(Command) * (points + 3)) return;
++        auto* commands = reinterpret_cast<Command*>(v.begin);
++        if (commands[0].type != 1 || commands[points + 2].type != 5) return;
++        for (u32 i = 1; i <= points + 1; ++i)
++            if (commands[i].type != 2) return;
++        i32 y[points];
++        m3_display::sweep_pixels(o->current[0],o->current[1],o->current[2],y);
++        for (u32 i = 0; i < points; ++i) commands[i + 1].y = y[i] * 1024;
++        invalidate(curve);
++
++        // Anchor at the resonant frequency, interpolating on the same polygon.
++        const u32 f = m3_display::interpolate(m3_display::frequency_table,m3_display::normalized(o->current[0]),6);
++        u32 i = 0;
++        while (i + 2 < points && m3_display::plot_frequency[i+1] < f) ++i;
++        const u32 lo = m3_display::plot_frequency[i], hi = m3_display::plot_frequency[i+1];
++        const i32 mix = f <= lo ? 0 : i32((f-lo)*256u/(hi-lo));
++        const i32 left = commands[i+1].x / 1024, right = commands[i+2].x / 1024;
++        const i32 x = bounded(left + (right-left)*mix/256,51,429);
++        const i32 top = bounded(y[i] + (y[i+1]-y[i])*mix/256 + 3,62,139);
++        if (o->badge) position(&o->badge->leaf,x,top);
++        position(o->q,x,top+20);
++    }
++    static void frame(Object* o, i32) {
++        if (render_page != main_page || !o->base.svg) return;
++        const u32 t = platform::byte(platform::kSelectedTrack);
++        u32 changed = o->shown ? 0 : 15;
++        for (u32 i = 0; i < 4; ++i) {
++            const i32 value = stock<i32(u32,u32,u32,u32)>(0x8d5ac9dc)(0x86bd027c,t,16+i,1);
++            if (value != o->current[i]) changed |= 1u << i;
++            o->current[i] = value;
++        }
++        if (changed & 7) update_curve(o);
++        if (changed & 2) {
++            char value[4];
++            number(value,(m3_display::normalized(o->current[1])*99 + 16383)/32767,"");
++            write_text(o->q,value);
++        }
++        if (changed & 4) {
++            const u32 shape = m3_display::normalized(o->current[2]);
++            write_text(o->type,shape < 8192 ? "lowpass" : shape < 24576 ? "bandpass" : "highpass");
++        }
++        if (changed & 8) {
++            char value[8];
++            const u32 ms = decay_ms(decay_position(o->current[3]));
++            number(value,ms,"");
++            write_text(o->duration,ms ? value : "Off");
++            position(o->duration,ms >= 1000 ? 424 : 430,169);
++        }
++        o->shown = 1;
++        draw(&o->base);
++    }
++};
++
++}
++}
++OPXY_SCREEN(m3_ui::Renderer, "m3_setup", "m3_setup.svg", 256, 160)
++namespace m3_ui {
++const Record screen_record = {nullptr,nullptr,"trine",reinterpret_cast<const char*>(11),reinterpret_cast<const char*>(setup_page),0};
++const Screen setup_screen = {reinterpret_cast<char*>(&opxy_screen_state),sizeof(opxy_screen_state),
++    reinterpret_cast<const char*>(&opxy_screen_vtable),opxy_screen_asset,
++    reinterpret_cast<char*(*)(char*,u32)>(&opxy_screen_ctor)};
++namespace {
++using namespace opxy::screen;
++MainRenderer::Object main_object;
++const char main_asset[] = "m3_main.svg";
++const VTable<MainRenderer> main_methods = {
++    &destroy<MainRenderer::Object>, &destroy<MainRenderer::Object>,
++    reinterpret_cast<const void*>(0x8d51fcd4), &MainRenderer::frame, &MainRenderer::init,
++    reinterpret_cast<const void*>(0x8c0867f0)
++};
++char* main_construct(char* mem, u32 page) {
++    return reinterpret_cast<char*>(construct(reinterpret_cast<MainRenderer::Object*>(mem),
++                                              page, 256, main_asset, &main_methods));
++}
++const Record main_record = {nullptr,nullptr,"trine",reinterpret_cast<const char*>(11),reinterpret_cast<const char*>(main_page),0};
++const Screen main_screen = {reinterpret_cast<char*>(&main_object),sizeof(main_object),
++    reinterpret_cast<const char*>(&main_methods),main_asset,main_construct};
++}
++
++}
++extern "C" {
++int m3_setup_register() __asm__("m3_setup_register");
++u32 m3_setup_frame(u32) __asm__("m3_setup_frame");
++u32 m3_setup_click(u32,u32,u32) __asm__("m3_setup_click");
++u32 m3_stock_click(u32,u32,u32) __asm__("m3_stock_click");
++int m3_setup_turn(u32,u32,u32) __asm__("m3_setup_turn");
++void m3_receive(u32,u32,i32) __asm__("m3_receive");
++u32 m3_step(u32,u32,u32) __asm__("m3_step");
++u32 m3_project() __asm__("m3_project");
++void m3_new() __asm__("m3_new");
++void m3_stock_new() __asm__("m3_stock_new");
++void* m3_copy(void*,const void*,u32) __asm__("m3_copy");
++}
++int m3_setup_register() {
++    const int alt = sdk_register_screen(&m3_ui::screen_record, &m3_ui::setup_screen);
++    const int main = sdk_register_screen(&m3_ui::main_record, &m3_ui::main_screen);
++    return alt && main;
++}
++u32 m3_setup_frame(u32 selected) {
++    using namespace m3_ui;
++    refresh();
++    render_page = 0;
++    const u32 track = opxy::platform::byte(opxy::platform::kSelectedTrack);
++    if (selected != 3 || !context(track) || !plain()) {
++        menu_pattern = 0;
++        return 0;
++    }
++    if (menu(track) && sdk_screen_ready(&screen_record, &setup_screen)) render_page = setup_page;
++    else if (sdk_screen_ready(&main_record, &main_screen)) render_page = main_page;
++    return render_page;
++}
++namespace m3_ui {
++bool change(u32 track, int slot, u32 next) {
++    if (next == saved.word[slot]) return false;
++    saved.word[slot] = next;
++    publish_track(active(),track);
++    stock<void()>(0x8d585ee8)();
++    return true;
++}
++}
++u32 m3_setup_click(u32 track,u32 key,u32 controller) {
++    using namespace m3_ui;
++    if (key >= 11 && key <= 13 && context(track) && plain()
++            && sdk_screen_ready(&screen_record, &setup_screen)) {
++        const u32 pattern = pattern_for(track);
++        const int slot = index_of(active(), pattern);
++        if (slot >= 0 && key == 11) {
++            menu_pattern = menu_pattern == pattern ? 0 : pattern;
++            return 0;
++        }
++        if (slot >= 0 && menu(track)) {
++            change(track,slot,click(saved.word[slot], key - 10));
++            return 0;
++        }
++    }
++    return m3_stock_click(track,key,controller);
++}
++int m3_setup_turn(u32 track,u32 index,u32 event) {
++    using namespace m3_ui;
++    if (index < 16 || index > 19 || !menu(track) || !plain()) return -1;
++    const int slot = index_of(active(), menu_pattern);
++    if (slot < 0 || !event) return 0;
++    return change(track,slot,edit(saved.word[slot], index-16, at<const i32>(event)[1]));
++}
++void m3_receive(u32 base,u32 id,i32 value) {
++    using namespace m3_ui;
++    if (id != private_message) { stock<void(u32,u32,i32)>(0x8d50eb8c)(base,id,value); return; }
++    const u32 t = u32(value) >> setup_bits, settings = u32(value) & setup_mask;
++    if (t < tracks && valid_setup(settings)) audio[t] = settings;
++}
++u32 m3_step(u32 project,u32 track,u32 position) {
++    const u32 result = stock<u32(u32,u32,u32)>(0x8d5936c0)(project,track,position);
++    if (track < m3_ui::tracks) m3_ui::publish_track(m3_ui::active(),track);
++    return result;
++}
++u32 m3_project() {
++    using namespace m3_ui;
++    const u32 project = stock<u32()>(0x8d584210)();
++    if (project && project == pending_project) saved = pending;
++    else for (u32 i = 0; i < slots; ++i) saved.word[i] = initial_settings;
++    pending_project = menu_pattern = 0;
++    for (u32 t = 0; t < tracks; ++t) sent[t] = false;
++    refresh();
++    return project;
++}
++void m3_new() { m3_ui::pending_project = 0; m3_stock_new(); }
++void* m3_copy(void* dst, const void* src, u32 bytes) {
++    using namespace m3_ui;
++    const u32 to = reinterpret_cast<Address>(dst), from = reinterpret_cast<Address>(src);
++    if (bytes == pattern_bytes) {
++        const u32 project = active();
++        const int a = index_of(project, from), b = index_of(project, to);
++        const u32 setting = a >= 0 ? saved.word[a] : from == clipboard ? copied : initial_settings;
++        if (to == clipboard) copied = setting;
++        if (b >= 0) saved.word[b] = setting;
++    }
++    return stock<void*(void*,const void*,u32)>(0x040201c4)(dst,src,bytes);
++}
++// Companion callbacks execute on the GUI role. Restore is staged until stock
++// publishes the deserialized project buffer.
++extern "C" {
++unsigned m3_saved(unsigned) __asm__("m3_saved");
++void m3_loaded(unsigned, const opxy::u8*, unsigned) __asm__("m3_loaded");
++}
++unsigned m3_saved(unsigned i) { return i < m3_ui::slots ? m3_ui::saved.word[i] : 0; }
++void m3_loaded(unsigned project, const opxy::u8* bytes, unsigned width) {
++    m3_ui::pending_project = project;
++    for (unsigned i = 0; i < m3_ui::slots; ++i) {
++        unsigned word = 0;
++        if (!bytes || !width) word = m3_ui::initial_settings;
++        if (bytes && (width == 2 || width == 4))
++            for (unsigned j = 0; j < width; ++j)
++                word |= unsigned(bytes[i * width + j]) << (8 * j);
++        if (width == 2) word = m3_resonator::migrate_v1(word);
++        m3_ui::pending.word[i] = m3_resonator::valid_setup(word) ? word : 0;
++    }
++}
+diff --git a/sdk/platform/opxy-1.2.1/morph_preset_files.hpp b/sdk/platform/opxy-1.2.1/morph_preset_files.hpp
+new file mode 100644
+index 0000000..b2a1662
+--- /dev/null
++++ b/sdk/platform/opxy-1.2.1/morph_preset_files.hpp
+@@ -0,0 +1,27 @@
++// Included by track_control.cpp: same authenticated 1.2.1 newlib calls used by
++// project_companion.cpp. No new firmware hooks. Only explicit GUI operations.
++#include <opxy/morph_preset_files.hpp>
++namespace {
++bool morph_preset_path(char* path,u32 slot,u32 copy) {
++ if(slot>=16u || copy>=2u || !morph_unique_owner() || !morph_live_context())return false;
++ const char* source="/fat32/morph-ab-01a.mab";
++ for(u32 n=0;n<24u;++n)path[n]=source[n];
++ const u32 number=slot+1u;path[16]=char('0'+number/10);path[17]=char('0'+number%10);path[18]=char('a'+copy);
++ return true;
++}
++}
++extern "C" opxy::u32 sdk_morph_preset_read(u32 slot,u32 copy,opxy::u8* data,u32 capacity) {
++ char path[24]={};if(!data || capacity!=2396u || !morph_preset_path(path,slot,copy))return 0;
++ void* f=stock<void*(const char*,const char*)>(0x8fed0348)(path,"rb");if(!f)return 0;
++ const u32 count=stock<u32(void*,u32,u32,void*)>(0x8fed05bc)(data,1,capacity,f);
++ opxy::u8 extra=0;const u32 tail=stock<u32(void*,u32,u32,void*)>(0x8fed05bc)(&extra,1,1,f);
++ const int closed=stock<int(void*)>(0x8fed00ae)(f);
++ return closed || !morph_live_context()?0:tail?capacity+1:count;
++}
++extern "C" bool sdk_morph_preset_write(u32 slot,u32 copy,const opxy::u8* data,u32 bytes) {
++ char path[24]={};if(!data || bytes!=2396u || !morph_preset_path(path,slot,copy))return false;
++ void* f=stock<void*(const char*,const char*)>(0x8fed0348)(path,"wb");if(!f)return false;
++ const u32 count=stock<u32(const void*,u32,u32,void*)>(0x8fed0780)(data,1,bytes,f);
++ const int closed=stock<int(void*)>(0x8fed00ae)(f);
++ return count==bytes && !closed && morph_live_context();
++}
+diff --git a/sdk/platform/opxy-1.2.1/project_companion.cpp b/sdk/platform/opxy-1.2.1/project_companion.cpp
+index c61a0cc..9b0c486 100644
+--- a/sdk/platform/opxy-1.2.1/project_companion.cpp
++++ b/sdk/platform/opxy-1.2.1/project_companion.cpp
+@@ -50,6 +50,10 @@ extern "C" void sdk_project_locks_byte(u32 byte) __asm__("sdk_project_locks_byte
+ extern "C" void sdk_project_locks_loaded(void* project, u32 valid) __asm__("sdk_project_locks_loaded");
+ // What open-xy.locks takes in the companion being written (project_companion.hpp).
+ u32 sdk_companion_reserved;
++#ifdef M3_RESONATOR
++extern "C" unsigned m3_saved(unsigned) __asm__("m3_saved");
++extern "C" void m3_loaded(unsigned,const opxy::u8*,unsigned) __asm__("m3_loaded");
++#endif
+ 
+ namespace {
+ typedef void File;
+@@ -196,6 +200,21 @@ void write_companion(void* project, u32 bytes, u32 crc) {
+     }
+     w.put(listed ? "\n      },\n" : "},\n");
+     w.put("      \"profile\": \"opxy-1.2.1\",\n      \"version\": 1\n    }");
++#ifdef M3_RESONATOR
++    w.put(",\n    \"open-xy.resonator\": {\"version\":2,\"data\":\"");
++    const char alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
++    u32 bits = 0, rem = 0;
++    for (u32 i = 0; i < 128; ++i) {
++        const u32 settings = m3_saved(i);
++        for (u32 byte = 0; byte < 4; ++byte) {
++            bits = (bits << 8) | ((settings >> (8 * byte)) & 255);
++            rem += 8;
++            while (rem >= 6) { rem -= 6; w.byte(alphabet[(bits >> rem) & 63]); }
++        }
++    }
++    w.byte(alphabet[(bits << (6-rem)) & 63]);
++    w.put("=\"}");
++#endif
+     if(master_processor::processor_count()) {
+         const auto controls=master_processor::current();
+         u32 count=0;const auto* parameters=master_processor::parameters(count,controls.type ? controls.type : 1);
+@@ -805,6 +824,33 @@ bool master_section(Parser& p,bool& valid) {
+ // object with a positive integer version, as any section. Version 1's pool goes byte by
+ // byte to the step locks service's staged pool; locks_ok says it was read whole. A newer
+ // version is ignored.
++#ifdef M3_RESONATOR
++opxy::u8 resonator_data[512];
++u32 resonator_width;
++bool resonator_section(Parser& p, bool& ok) {
++    resonator_width = 0;
++    ok = false;
++    if (p.peek() != '{') return p.skip();
++    u32 version = 0, count = 0;
++    bool have_version = false, data_ok = false;
++    const bool read = p.object([&](const Text& key) {
++        if (key.is("version")) return p.natural(version,have_version);
++        if (!key.is("data")) return p.skip();
++        count = 0; data_ok = false;
++        if (p.peek() != '"') return p.skip();
++        return p.base64([&](u32 byte) {
++            if (count < sizeof(resonator_data)) resonator_data[count] = byte;
++            ++count;
++        }, data_ok);
++    });
++    ok = have_version && version >= 1;
++    if (ok && data_ok) {
++        if (version == 1 && count == 256) resonator_width = 2;
++        if (version == 2 && count == 512) resonator_width = 4;
++    }
++    return read;
++}
++#endif
+ bool locks_ok;
+ bool locks_section(Parser& p, bool& ok) {
+     ok = locks_ok = false;
+@@ -875,6 +921,9 @@ bool read_document(File* file, u32& bytes, u32& crc, bool& applies) {
+         applies = false;
+         master_applies=false;master_defaults();
+         locks_ok = false;
++#ifdef M3_RESONATOR
++        resonator_width = 0;
++#endif
+         valid = true;
+         invalid_count = 0;
+         clear_maps();
+@@ -888,6 +937,13 @@ bool read_document(File* file, u32& bytes, u32& crc, bool& applies) {
+             }
+             if (name.is("open-xy.machines")) return machines_section(p, applies, machines_ok);
+             bool ok;
++#ifdef M3_RESONATOR
++            if (name.is("open-xy.resonator")) {
++                if (!resonator_section(p,ok)) return false;
++                if (!note_section(name,ok)) valid = false;
++                return true;
++            }
++#endif
+             if (name.is("open-xy.locks")) {
+                 if (!locks_section(p, ok)) return false;
+                 if (!note_section(name, ok)) valid = false;
+@@ -938,6 +994,10 @@ bool apply_companion(void* project, const char* path) {
+     if (!applies || !measure(path, read_chunk, measured_bytes, measured_crc) || measured_bytes != bytes ||
+         measured_crc != crc)
+         return false;
++#ifdef M3_RESONATOR
++    if (machines_apply && resonator_width)
++        m3_loaded(static_cast<u32>(reinterpret_cast<opxy::platform::Address>(project)), resonator_data, resonator_width);
++#endif
+     if(machines_apply)remap(static_cast<unsigned char*>(project));
+     if(master_applies)master_processor::loaded_state(static_cast<u32>(reinterpret_cast<opxy::platform::Address>(project)),master_state);
+     return locks_ok;
+@@ -955,6 +1015,9 @@ u32 sdk_project_save(void* project, const char* path) {
+ // Stock's deserialize, then the companion's numbers and step locks. The project is the inactive buffer,
+ // which nothing reads until stock validates it and makes it pending.
+ u32 sdk_project_load(void* project, const char* path) {
++#ifdef M3_RESONATOR
++    m3_loaded(0,nullptr,0);
++#endif
+     master_processor::clear_pending();
+     sdk_project_locks_begin();
+     const u32 loaded = deserialize(project, path);
+diff --git a/sdk/platform/opxy-1.2.1/screen_hooks.s b/sdk/platform/opxy-1.2.1/screen_hooks.s
+index 8adbb5f..9dd1183 100644
+--- a/sdk/platform/opxy-1.2.1/screen_hooks.s
++++ b/sdk/platform/opxy-1.2.1/screen_hooks.s
+@@ -57,3 +57,25 @@ sdk_fx_value:
+     UNLINK;
+     RTS;
+ .size sdk_fx_value, .-sdk_fx_value
++/* Replay the eight displaced bytes of each stock function entry. */
++.section .text
++.align 2
++.global m3_stock_click
++.type m3_stock_click, STT_FUNC
++m3_stock_click:
++    LINK 8;
++    [--SP] = (R7:4, P5:5);
++    SP += -16;
++    P0.H = 0x8c0b; P0.L = 0x2a74;
++    JUMP (P0);
++.size m3_stock_click, .-m3_stock_click
++
++.global m3_stock_new
++.type m3_stock_new, STT_FUNC
++m3_stock_new:
++    LINK 21552;
++    [--SP] = (R7:4, P5:3);
++    SP += -20;
++    P0.H = 0x8d58; P0.L = 0x811c;
++    JUMP (P0);
++.size m3_stock_new, .-m3_stock_new
+diff --git a/sdk/platform/opxy-1.2.1/screen_order.cpp.in b/sdk/platform/opxy-1.2.1/screen_order.cpp.in
+index 966a1fd..acf0a42 100644
+--- a/sdk/platform/opxy-1.2.1/screen_order.cpp.in
++++ b/sdk/platform/opxy-1.2.1/screen_order.cpp.in
+@@ -3,20 +3,54 @@
+ // collection's startup glue.
+ #include "screen_order.hpp"
+ #include "stock.hpp"
++#include <opxy/morph_hud_raw_turn.hpp>
+ 
+ extern "C" {
++#ifdef M3_RESONATOR
++opxy::u32 m3_setup_frame(opxy::u32) __asm__("m3_setup_frame");
++#endif
+ opxy::u32 sdk_screen_activation(opxy::u32, opxy::u32) __asm__("sdk_screen_activation");
+ opxy::u32 (*sdk_screen_substitute)(opxy::u32) __asm__("sdk_screen_substitute");
++// Morph GUI-only read-only overlay. This pointer is zero in other kits.
++// The callback never grants HUD input authorization.
++opxy::u32 (*sdk_morph_hud_substitute)(opxy::u32) __asm__("sdk_morph_hud_substitute");
++bool (*sdk_morph_hud_hide_menu)() __asm__("sdk_morph_hud_hide_menu");
++// A selected track's stock held-key state; read-only. The mapping 14..21 is
++// inherited from V1, with Tracks 3..8 requiring eventual hardware qualification.
++opxy::u32 sdk_morph_track_held(opxy::u32 track) __asm__("sdk_morph_track_held");
++opxy::u32 sdk_morph_gui_track() __asm__("sdk_morph_gui_track");
++opxy::u32 sdk_morph_gui_module() __asm__("sdk_morph_gui_module");
++// A machine may observe which *registered screen the compositor actually chose*.
++// This is not an input event, not the permission to write, and it is never
++// invoked unless the machine installed its pointer during its own GUI tick.
++void (*sdk_morph_hud_frame_witness)(opxy::u32,opxy::u32)
++    __asm__("sdk_morph_hud_frame_witness");
++opxy::u32 sdk_morph_gui_key_down(opxy::u32 key) __asm__("sdk_morph_gui_key_down");
++opxy::u32 sdk_morph_gui_ready() __asm__("sdk_morph_gui_ready");
++opxy::u32 sdk_morph_gui_shift_held() __asm__("sdk_morph_gui_shift_held");
++// Literal Blackfin ELF linker name: do not infer it from Mach-O nm.
++opxy::u32 sdk_morph_gui_encoder_down(opxy::u32) __asm__("sdk_morph_gui_encoder_down");
++// A GUI-only, owner-gated raw pulse sink. Null if no Morph machine is present.
++bool (*sdk_morph_hud_raw_turn_route)(opxy::u32,opxy::u32,opxy::i32,opxy::u32)
++    __asm__("sdk_morph_hud_raw_turn_route");
++opxy::u32 sdk_morph_other_track_held(opxy::u32 track) __asm__("sdk_morph_other_track_held");
+ int sdk_screen_owned(opxy::u32) __asm__("sdk_screen_owned");
+ opxy::u32 sdk_sample_screen(opxy::u32) __asm__("sdk_sample_screen");
+ opxy::u32 sdk_screen_next(opxy::platform::ScreenCursor*, opxy::u32) __asm__("sdk_screen_next");
+ opxy::u32 sdk_screen_sample_page() __asm__("sdk_screen_sample_page");
++void sdk_morph_gui_sample_turns() __asm__("sdk_morph_gui_sample_turns");
++opxy::u32 sdk_morph_gui_route_trace(opxy::u32) __asm__("sdk_morph_gui_route_trace");
++void sdk_morph_gui_turns_reset() __asm__("sdk_morph_gui_turns_reset");
+ void sdk_send_refresh() __asm__("sdk_send_refresh");
+ }
+ 
+ namespace {
+ opxy::platform::ScreenOrder<@PAGE_LIMIT@> order;
+ opxy::platform::ScreenActivation activation;
++opxy::u32 raw_track=8u,raw_module=4u,raw_witness_track=8u;
++opxy::u32 route_trace[3]={};
++bool hide_morph_menu=false;
++morph_raw_turn::Sampler raw_sampler={}; // plain zero-initialized POD
+ }
+ 
+ // selected is the page stock selected for this frame.
+@@ -24,15 +58,100 @@ opxy::u32 sdk_screen_next(opxy::platform::ScreenCursor* cursor, opxy::u32 select
+     const bool first = cursor->page == 0;
+     // Once a frame, at its first slot: the sends' effect controls 5..8.
+     if (first) sdk_send_refresh();
+-    const opxy::u32 substitute = first && sdk_screen_substitute ? sdk_screen_substitute(selected) : 0;
+-    const opxy::u32 more = order.advance(*cursor, selected, substitute, sdk_screen_owned, sdk_sample_screen);
+-    if (first) activation.select(order.to ? order.to : order.promoted);
++    const opxy::u32 morph_page = first && sdk_morph_hud_substitute ? sdk_morph_hud_substitute(selected) : 0;
++    // No overlay if the requested screen is not a registered own screen. This
++    // preserves other machines and the existing player-page substitute.
++    const opxy::u32 verified_morph_page = morph_page && sdk_screen_owned(morph_page) == 1 ? morph_page : 0;
++    opxy::u32 substitute = verified_morph_page ? verified_morph_page :
++        (first && sdk_screen_substitute ? sdk_screen_substitute(selected) : 0);
++#ifdef M3_RESONATOR
++    if (first) {
++        const opxy::u32 page = m3_setup_frame(verified_morph_page ? 0u : selected);
++        if (page && !substitute) substitute = page;
++    }
++#endif
++    opxy::u32 more = order.advance(*cursor, selected, substitute, sdk_screen_owned, sdk_sample_screen,
++        verified_morph_page != 0u && selected == 1u);
++    if (first) {
++        activation.select(order.to ? order.to : order.promoted);
++        // Gate 10: the actual ScreenOrder decision, not a request by Morph.
++        // Page 1 can be a real instrument screen (WaveTbl). Only the verified
++        // Morph route opts it in; SHIFT-first menus still fail that route.
++        const bool morph_owned=order.to==219u && verified_morph_page==219u;
++        hide_morph_menu=morph_owned && sdk_morph_hud_hide_menu && sdk_morph_hud_hide_menu();
++        const opxy::u32 trace_track=sdk_morph_hud_substitute?sdk_morph_gui_track():8u;
++        if(trace_track<8u && sdk_morph_track_held(trace_track)) {
++            route_trace[0]=selected;route_trace[1]=sdk_morph_gui_module();
++            route_trace[2]=(morph_page?1u:0u)|(verified_morph_page?2u:0u)|(morph_owned?4u:0u);
++        }
++        raw_witness_track=morph_owned?sdk_morph_gui_track():8u;
++        if (sdk_morph_hud_frame_witness)
++            sdk_morph_hud_frame_witness(morph_owned ? 219u : 0u, sdk_morph_gui_track());
++        // Losing actual screen ownership drops partial motion immediately.
++        // Sampling itself is on the V1 GUI-tick boundary, not render cadence.
++        if(!morph_owned)sdk_morph_gui_turns_reset();
++    }
++    // Skip only the held-track menu's paint slot. Its controls, held-key state,
++    // callbacks and selected page remain untouched. Other overlays keep order.
++    if (more && hide_morph_menu && cursor->page==74u && order.from!=74u)
++        more=order.advance(*cursor,selected,0,sdk_screen_owned,sdk_sample_screen);
+     return more;
+ }
+ 
++opxy::u32 sdk_morph_gui_route_trace(opxy::u32 index) {return index<3u?route_trace[index]:0u;}
++void sdk_morph_gui_turns_reset() {
++    raw_sampler.reset();raw_track=8u;raw_module=4u;
++}
++void sdk_morph_gui_sample_turns() {
++    const opxy::u32 track=sdk_morph_gui_track(),module=sdk_morph_gui_module();
++    if(!sdk_morph_hud_raw_turn_route || track>=8u || raw_witness_track!=track) {
++        sdk_morph_gui_turns_reset();return;
++    }
++    if(track!=raw_track || module!=raw_module) {
++        raw_sampler.reset();raw_track=track;raw_module=module;
++    }
++    const volatile opxy::u32* raw=reinterpret_cast<const volatile opxy::u32*>(0x08024c8cu);
++    const opxy::u32 words[4]={raw[0],raw[1],raw[2],raw[3]};
++    opxy::i32 steps[4]={};
++    const bool shifted=sdk_morph_gui_shift_held()!=0u;
++    const bool k4=sdk_morph_gui_encoder_down(3u)!=0u;
++    raw_sampler.sample(words,shifted,k4,steps);
++    for(opxy::u32 i=0;i<4u;++i)
++        if(steps[i])(void)sdk_morph_hud_raw_turn_route(track,i,steps[i],k4?1u:0u);
++}
++
+ // This frame's sample engine's own screen, or 0.
+ opxy::u32 sdk_screen_sample_page() { return order.sample_screen(); }
+ 
+ opxy::u32 sdk_screen_activation(opxy::u32 page, opxy::u32 track) {
+     return activation.token(page, track);
+ }
++
++// No stale track-key state is synthesized. Stock's held-key reader is a
++// read-only UI path, never an event consumer and never a recorder write.
++opxy::u32 sdk_morph_track_held(opxy::u32 track) {
++    if (track >= 8u) return 0;
++    return opxy::platform::stock<opxy::u32(opxy::u32)>(0x8d5b7d7cu)(14u + track);
++}
++
++opxy::u32 sdk_morph_gui_track() { return opxy::platform::selected_track(); }
++opxy::u32 sdk_morph_gui_module() { return opxy::platform::word(0x080238bcu); }
++
++// SDK-owned physical queries. Do not duplicate stock pointers in machine code.
++opxy::u32 sdk_morph_gui_key_down(opxy::u32 key) {
++    return key <= 21u ? opxy::platform::stock<opxy::u32(opxy::u32)>(0x8d5b7d7cu)(key) : 0u;
++}
++opxy::u32 sdk_morph_gui_shift_held() { return opxy::platform::shift_held() ? 1u : 0u; }
++// SDK-side, read-only physical encoder hold query; no stock click synthesis.
++opxy::u32 sdk_morph_gui_encoder_down(opxy::u32 index) { return opxy::platform::encoder_held(index) ? 1u : 0u; }
++opxy::u32 sdk_morph_gui_ready() {
++    const opxy::u32 module=opxy::platform::word(0x080238bcu);
++    return opxy::platform::word(0x840a0528u)==0u &&
++           opxy::platform::byte(opxy::platform::kSelectedTrack)<8u && module<3u ? 1u : 0u;
++}
++opxy::u32 sdk_morph_other_track_held(opxy::u32 track) {
++    if (track>=8u) return 1u;
++    for (opxy::u32 t=0;t<8u;++t)
++        if (t!=track && sdk_morph_track_held(t)) return 1u;
++    return 0u;
++}
+diff --git a/sdk/platform/opxy-1.2.1/screen_order.hpp b/sdk/platform/opxy-1.2.1/screen_order.hpp
+index fe5c1f1..8c1bed6 100644
+--- a/sdk/platform/opxy-1.2.1/screen_order.hpp
++++ b/sdk/platform/opxy-1.2.1/screen_order.hpp
+@@ -51,14 +51,18 @@ template <u32 Slots> struct ScreenOrder {
+     template <class Owned> bool advance(ScreenCursor& cursor, u32 selected, u32 substitute, Owned owned) {
+         return advance(cursor, selected, substitute, owned, no_sample);
+     }
+-    template <class Owned, class Sample> bool advance(ScreenCursor& cursor, u32 selected, u32 substitute, Owned owned, Sample sample) {
++    template <class Owned, class Sample> bool advance(ScreenCursor& cursor, u32 selected, u32 substitute, Owned owned, Sample sample, bool allow_page_one = false) {
+         const u32 painted = cursor.page;
+         if (painted == 0) {
+             base = cursor.slot - 4;
+             const bool valid = selected > 1 && selected < Slots;
+-            from = valid && substitute > 1 && substitute < Slots && substitute != selected ? selected : 0;
++            from = (valid || (allow_page_one && selected == 1)) && substitute > 1 && substitute < Slots && substitute != selected ? selected : 0;
+             to = from ? substitute : 0;
+             promoted = after = 0;
++            // An owned source already belongs below stock overlays. Replacing
++            // its contents must preserve that promoted layer: keep `from` as
++            // the cursor page, while its slot points at `to`.
++            if (valid && from && owned(selected) == 1) promoted = selected;
+             if (valid && !from) {
+                 if (owned(selected) == 1) {
+                     promoted = selected;
+@@ -74,7 +78,12 @@ template <u32 Slots> struct ScreenOrder {
+             else if (painted == promoted) next = after + 1;
+             else if (next == promoted) next = promoted + 1;
+         }
+-        if (to && next == to) ++next;
++        // Skipping the replacement's old slot can land on the promoted
++        // source slot when the two are adjacent. Skip that source too.
++        if (to && next == to) {
++            ++next;
++            if (promoted && next == promoted && painted != after) ++next;
++        }
+         cursor.page = next;
+         cursor.slot = base + 4 * (from && next == from ? to : next);
+         return next < Slots;
+diff --git a/sdk/platform/opxy-1.2.1/synth_controls.cpp b/sdk/platform/opxy-1.2.1/synth_controls.cpp
+index 085df15..7fb4dee 100644
+--- a/sdk/platform/opxy-1.2.1/synth_controls.cpp
++++ b/sdk/platform/opxy-1.2.1/synth_controls.cpp
+@@ -4,6 +4,7 @@
+ // parameter; a turn edits the selected one, an enum one choice per detent; the
+ // track menu's scramble also randomizes the alternates. Everything else reaches stock as before.
+ #include "synth_controls.hpp"
++#include <opxy/morph_hud_slot_map.hpp>
+ #include <opxy/effect.hpp>
+ #include "shift_row.hpp"
+ #include "synth_shift.hpp"
+@@ -277,6 +278,58 @@ const char* shift_title(u32 engine, u32 position) {
+ }
+ }
+ 
++// Gate14: SDK-owned M1 current-slot witness. This is NOT a stock-synth
++// fallback and must never invent a displayed slot when metadata is absent.
++extern "C" bool sdk_morph_hud_m1_map(opxy::u32 track,morph_m1::Map* out)
++    __asm__("sdk_morph_hud_m1_map");
++extern "C" bool sdk_morph_hud_m1_map(opxy::u32 track,morph_m1::Map* out) {
++ if(!out)return false;
++ morph_m1::Map map={};morph_m1::clear(map);
++ if(track>=8u || track!=byte(kSelectedTrack) || word(kInstrumentPage)!=0u ||
++    word(0x840a0528u)!=0u) { *out=map;return false; }
++ Track* t=nullptr;
++ const SynthControls* m=machine(track,t);
++ // V1 uses sdk_synth_shown's stock fallback: the four basic slots.
++ // Alternate selection remains driven solely by installed SDK metadata.
++ if(!m || !t) {
++  for(u32 i=0u;i<4u;++i)map.primary[i]=map.shown[i]=i;
++  *out=map;return true;
++ }
++ for(u32 i=0u;i<4u;++i) {
++  const u32 shown=t->slots[i];
++  if(shown<8u && !(m->absent & (1u<<shown)))map.shown[i]=shown;
++  const u32 first=i,second=m->next[first];
++  if(!(m->absent & (1u<<first)))map.primary[i]=first;
++  map.alternate[i]=map.primary[i];
++  if(second>=4u && second<8u && !(m->absent & (1u<<second))) {
++   map.alternate[i]=second;map.dual=1u;
++  }
++  if(shown>=4u && shown<8u)map.secondary=1u;
++ }
++ *out=map;return true;
++}
++extern "C" bool sdk_morph_hud_m1_toggle(opxy::u32 track)
++    __asm__("sdk_morph_hud_m1_toggle");
++extern "C" bool sdk_morph_hud_m1_toggle(opxy::u32 track) {
++ if(track>=8u || track!=byte(kSelectedTrack) || word(kInstrumentPage)!=0u ||
++    shift_held() || word(0x840a0528u)!=0u)return false;
++ Track* t=nullptr;
++ const SynthControls* m=machine(track,t);
++ if(!m || !t)return false;
++ bool any=false,secondary=false;
++ for(u32 i=0u;i<4u;++i) {
++  if(m->next[i]>=4u && m->next[i]<8u && !(m->absent&(1u<<m->next[i])))any=true;
++  if(t->slots[i]>=4u && t->slots[i]<8u)secondary=true;
++ }
++ if(!any)return false;
++ for(u32 i=0u;i<4u;++i) {
++  const u32 next=m->next[i];
++  t->slots[i]=static_cast<u8>(!secondary && next>=4u && next<8u &&
++      !(m->absent&(1u<<next)) ? next : i);
++ }
++ return true;
++}
++
+ void sdk_synth_shown(u32 track, u8* slots) {
+     Track* t;
+     const SynthControls* m = machine(track, t);
+@@ -306,7 +359,20 @@ const char* sdk_synth_title(u32 engine, u32 index) {
+ // for every engine with alternates. On that page of an owned synth the click
+ // also selects the position's next parameter, or every position's on a paged synth.
+ // On the player page it goes to the players service.
++// Only a visibly authorized Morph HUD may consume these stock clicks.
++// The machine revokes this pointer whenever its unique AUX owner disappears.
++extern "C" {
++bool (*sdk_morph_hud_press_route)(opxy::u32)
++    __asm__("sdk_morph_hud_press_route") = nullptr;
++// When Morph's actual compositor owns a track HUD, suppress stock edits.
++// Physical movement is decoded separately from the proven raw A-bank sampler.
++bool (*sdk_morph_hud_turn_suppress)(opxy::u32)
++    __asm__("sdk_morph_hud_turn_suppress") = nullptr;
++}
++
+ void sdk_synth_press(u32 encoder) {
++    if (encoder < opxy::page_controls && sdk_morph_hud_press_route &&
++        sdk_morph_hud_press_route(encoder)) return;
+     stock<void(u32)>(0x8d51f1fc)(encoder);
+     Track* t;
+     const SynthControls* m;
+@@ -421,7 +487,19 @@ u32 sdk_param_steps(u32 track, u32 index, u32* scale) {
+ // of the selected track through stock, which owns stepping, parameter locks
+ // and publication. Indices 0..3 come only from the engine page's unshifted
+ // encoders, so an owned synth's position edits the parameter it shows.
++#ifdef M3_RESONATOR
++extern "C" int m3_setup_turn(u32,u32,u32) __asm__("m3_setup_turn");
++#endif
+ u32 sdk_synth_turn(u32 project, u32 track, u32 index, u32 event) {
++    if (event && sdk_morph_hud_turn_suppress && sdk_morph_hud_turn_suppress(track)) {
++        const opxy::i32 still[3]={0,0,0};
++        return stock<u32(u32,u32,u32,const opxy::i32*)>(0x8d5ad5bc)(project,track,index,still);
++    }
++
++#ifdef M3_RESONATOR
++    const int handled = m3_setup_turn(track,index,event);
++    if (handled >= 0) return static_cast<u32>(handled);
++#endif
+     Track* t;
+     // The instrument controller maps Shift's engine-page row to slots 4..7.
+     // Reinterpret it as fine editing of the same visible position, including
+@@ -622,6 +700,9 @@ bool sdk_send_view(u32 track, SendView* view) {
+ // stock's set. After it, give every alternate (a slot 4..7 that
+ // a press reaches, so next[s] != s) except an empty placeholder a value from
+ // stock's own generator (8c0b5230), as stock does for slots 0..3.
++extern "C" {
++void (*sdk_morph_scramble_done)(opxy::u32) __asm__("sdk_morph_scramble_done") = nullptr;
++}
+ u32 sdk_synth_scramble(u32 project, u32 track, u32 index, opxy::i32 value) {
+     const u32 result = set_parameter(project, track, index, value);
+     // A padMix kit's per-hit lock words keep a base with no lock (stock's
+@@ -632,6 +713,9 @@ u32 sdk_synth_scramble(u32 project, u32 track, u32 index, opxy::i32 value) {
+     for (u32 s = opxy::page_controls; s < opxy::parameter_slots; ++s)
+         if (m->next[s] != s && !(m->absent & (1u << s)))
+             set_parameter(project, track, s, stock<opxy::i32(u32, u32)>(0x8c0b5230)(s, 0));
++    // Notify after stock and SDK alternate writes; the observer does not edit here.
++    if(track<8u && sdk_morph_scramble_done && word(0x840a0528u)==0u)
++        sdk_morph_scramble_done(track);
+     return result;
+ }
+ 
+diff --git a/sdk/platform/opxy-1.2.1/track_control.cpp b/sdk/platform/opxy-1.2.1/track_control.cpp
+index 1178e20..cef0dd6 100644
+--- a/sdk/platform/opxy-1.2.1/track_control.cpp
++++ b/sdk/platform/opxy-1.2.1/track_control.cpp
+@@ -68,9 +68,13 @@
+ // Own turns: the turn hooks (synth_controls.cpp) offer each detent of a
+ // track's encoders to sdk_control_turn before stock's editor sees it.
+ #include "track_control.hpp"
++#include <opxy/morph_midi_input.hpp>
++#include <opxy/morph_pad_input.hpp>
+ #include "stock.hpp"
+ #include "synth_controls.hpp"
+ #include "benchmark.hpp"
++#include "synth_shift.hpp"
++#include <opxy/morph_store_bridge.hpp>
+ 
+ namespace {
+ using opxy::i32;
+@@ -193,6 +197,94 @@ const ControlMachine* owner(u32 track) {
+     }
+     return nullptr;
+ }
++// Morph-only stored-CURRENT bridge. This is private to the pinned v0.0.6 build.
++// Its state is all zero-initialized POD; the stock loader runs no C++ ctors.
++const u32 kMorphHost=11u; // AUX 4 / CV, zero based
++bool morph_callback;
++control::Overlay* morph_overlay;
++opxy::morphport::Session morph_session={};
++opxy::morphport::Session morph_setbase={};
++opxy::morphport::Pending morph_pending[control::store_capacity]={};
++opxy::morphmidi::Latest morph_midi={};
++opxy::morphpad::Input morph_pad={};
++u32 morph_midi_epoch=0u;
++u32 morph_skips;
++u32 morph_setbase_skips;
++
++bool morph_identity(const char* name) {
++    const char wanted[]="morphcapture";
++    if(!name)return false;
++    for(u32 i=0;i<sizeof wanted;++i)if(name[i]!=wanted[i])return false;
++    return true;
++}
++bool morph_unique_owner() {
++    const ControlMachine* m=owner(kMorphHost);
++    return m && m->unique && (m->aux & (1u<<kMorphHost)) &&
++           morph_identity(m->name) && sdk_control_copies(kMorphHost)==1u;
++}
++bool morph_live_context() {
++    return morph_callback && morph_overlay && !word(kProjectLoading) &&
++           word(0x840a0524) && morph_unique_owner();
++}
++void morph_blocks(u32* into) {
++    for(u32 t=0;t<control::tracks;++t)into[t]=stock<u32(u32)>(0x8d587708)(t);
++}
++// Metadata is resolved for every track, independently of the visible page.
++// Cache only immutable catalog membership, never context or schema values.
++// Readiness, engine identity and every schema field are still read per check.
++static u32 morph_catalog_engine[8]={},morph_catalog_first[8]={};
++opxy::morphport::ShiftSchema morph_schema(u32 track) {
++    opxy::morphport::ShiftSchema out={};
++    out.engine=track_engine(track);
++    u32 first=0;
++    if(track<8 && morph_catalog_first[track] && morph_catalog_engine[track]==out.engine)
++        first=morph_catalog_first[track]-1;
++    else {
++        while(first<sdk_synth_control_count && sdk_synth_controls[first].engine()!=out.engine)++first;
++        if(track<8){morph_catalog_engine[track]=out.engine;morph_catalog_first[track]=first+1;}
++    }
++    // Catalog engine IDs are unique; preserve the original loop's semantics
++    // even if an invalid catalog contains duplicate engine IDs.
++    for(u32 n=first;n<sdk_synth_control_count;++n) {
++        const SynthControls& m=sdk_synth_controls[n];
++        if(m.engine()!=out.engine || m.effect || m.ready()!=1 || !m.synth_shift)continue;
++        const SynthShift& r=*m.synth_shift;
++        out.count=r.count>8?8:r.count;
++        for(u32 i=0;i<8;++i) {
++            out.choices[i]=i<out.count?r.choices[i]:1;
++            out.defaults[i]=i<out.count?r.defaults[i]:0;
++        }
++    }
++    return out;
++}
++bool morph_schema_same(const opxy::morphport::ShiftSchema& a,const opxy::morphport::ShiftSchema& b) {
++    if(a.engine!=b.engine || a.count!=b.count)return false;
++    for(u32 i=0;i<8;++i)if(a.choices[i]!=b.choices[i] || a.defaults[i]!=b.defaults[i])return false;
++    return true;
++}
++void morph_schema_capture(opxy::morphport::Session& s) {
++    for(u32 t=0;t<8;++t)s.shift[t]=morph_schema(t);
++}
++bool morph_check(const opxy::morphport::Session& session) {
++    if(!session.active || word(kProjectLoading) || !morph_unique_owner())return false;
++    const u32 p=word(0x840a0524);
++    if(!p || stock<u32(u32)>(0x8d587708)(kMorphHost)!=session.aux_block)return false;
++    u32 blocks[control::tracks];morph_blocks(blocks);
++    for(u32 t=0;t<8;++t)if(!morph_schema_same(session.shift[t],morph_schema(t)))return false;
++    return session.matches(p,byte(p+6u),blocks);
++}
++void morph_reset_bridge() {
++    morph_midi.clear();
++    morph_callback=false;morph_overlay=nullptr;
++    morph_session.clear();morph_setbase.clear();
++    for(u32 i=0;i<control::store_capacity;++i)morph_pending[i].accepted=false;
++    morph_skips=0;morph_setbase_skips=0;
++}
++// A failed SDK store is diagnostic, never a license to silently retry an old BASE.
++void morph_reject() {
++    if(morph_skips<255u)++morph_skips;
++    if(morph_setbase.active && morph_setbase_skips<255u)++morph_setbase_skips;
++}
+ Applied* find(u32 track, u32 index) {
+     for (u32 i = 0; i < applied_count; ++i)
+         if (applied[i].track == track && applied[i].index == index) return &applied[i];
+@@ -206,9 +298,30 @@ void store(u32 host) {
+         const control::Entry& e = overlay.stored[i];
+         if (e.track >= control::tracks || e.index >= control::track_parameters || e.track == host) continue;
+         const i32 value = e.value < 0 ? 0 : e.value;
++        // Each pending Morph word was authorized during this very callback.
++        // Recheck session, lock and stored CURRENT just before stock mutation.
++        if(host==kMorphHost && morph_unique_owner()) {
++            if(i>=control::store_capacity || !morph_pending[i].accepted ||
++               !morph_check(morph_session) || muted(kMorphHost) ||
++               stock<u32(u32)>(0x8d587708)(e.track)!=morph_pending[i].block ||
++               base(e.track,e.index)!=morph_pending[i].current) {
++                morph_reject();
++                continue;
++            }
++            morph_pending[i].accepted=false;
++        }
++        const bool shift_word=host==kMorphHost && (e.index==36u || e.index==37u);
++        const bool shift_live_unchanged=shift_word && live(e.track,e.index)==morph_pending[i].current;
+         *at<i32>(stock<u32(u32)>(0x8d587708)(e.track) + 0x3864 + e.index * 4) = value;
++        if(shift_word) {
++            // Preserve a currently playing lock; the SDK's next lock pass
++            // combines its fields with the updated stored word.
++            if(shift_live_unchanged)live_set(e.track,e.index,value);
++            continue;
++        }
+         if (lock_holds(e.track, e.index)) continue;
+-        param_set(kProject, e.track, e.index, value);
++        if(host==kMorphHost && morph_unique_owner())live_set(e.track,e.index,value);
++        else param_set(kProject,e.track,e.index,value);
+         opxy::platform::control_stock_set(e.track, e.index, value);
+     }
+ }
+@@ -305,6 +418,269 @@ extern "C" bool sdk_control_turn_offer(u32 track, u32 slot, const i32* event) {
+     return true;
+ }
+ 
++#include "morph_preset_files.hpp"
++
++// Private Morph stored-current bridge: not general SDK APIs.
++extern "C" bool sdk_morph_persist_identity(opxy::morphport::ShiftSchema* schemas,u32* patterns) {
++    if(!schemas || !patterns || word(kProjectLoading) || !morph_unique_owner())return false;
++    const u32 project=word(0x840a0524);if(!project)return false;
++    patterns[0]=byte(project+6u);
++    for(u32 t=0;t<9u;++t) {
++        const u32 track=t<8u?t:kMorphHost;
++        const u32 block=stock<u32(u32)>(0x8d587708)(track);
++        if(!block)return false;
++        // Pattern index relative to the project's own track; no addresses saved.
++        patterns[t+1]=(block-(project+0xd7cu+track*0x53f44u))/0x53f4u;
++        if(t<8u)schemas[t]=morph_schema(t);
++    }
++    return project==word(0x840a0524) && !word(kProjectLoading);
++}
++// Only the physical input receiver's call is patched. The shared stock
++// function and its MIDI/reset callers remain intact. Four arguments, C ABI.
++extern "C" void sdk_morph_pad_event(u32 controller,u32 track,i32 pressure,u32 source) {
++    const u32 project=word(0x840a0524);
++    if(!morph_unique_owner() || word(kProjectLoading) || !morph_session.active ||
++       !project || project!=morph_session.project || byte(project+6u)!=morph_session.scene)
++        morph_pad.requested=false;
++    if(!morph_pad.event(pressure))
++        stock<void(u32,u32,i32,u32)>(0x8d5974e0)(controller,track,pressure,source);
++}
++extern "C" void sdk_morph_pad_request(bool requested) {
++    morph_pad.request(requested && morph_live_context(),
++        static_cast<i32>(word(0x840ab680)));
++}
++extern "C" bool sdk_morph_pad_waiting(){return morph_pad.owned!=morph_pad.requested;}
++extern "C" bool sdk_morph_pad_read(i32* pressure) {
++    if(!pressure || !morph_pad.requested || !morph_pad.owned || !morph_live_context())return false;
++    *pressure=morph_pad.pressure;return true;
++}
++// Stock CC dispatch is in the GUI message path. No synth/store work here.
++extern "C" void sdk_morph_midi_cc(u32 track,u32 cc,u32 value) {
++    if(!opxy::morphmidi::matches(track,cc,value)) {
++        stock<void(u32,u32,u32)>(0x8d58e5ce)(track,cc,value);return;
++    }
++    const ControlMachine* m=owner(kMorphHost);
++    if(!m || !m->unique || !morph_identity(m->name)) {
++        stock<void(u32,u32,u32)>(0x8d58e5ce)(track,cc,value);return;
++    }
++    // Consume matching Morph traffic even when not ready, to avoid stock's
++    // ordinary setter recording unintended AUX locks. Full checks are deferred
++    // to the consumer; no all-track schema scan for each incoming packet.
++    const u32 project=word(0x840a0524);
++    if(!morph_session.active || word(kProjectLoading) || !project ||
++       project!=morph_session.project || byte(project+6u)!=morph_session.scene ||
++       stock<u32(u32)>(0x8d587708)(kMorphHost)!=morph_session.aux_block)return;
++    morph_midi.offer(value,morph_midi_epoch);
++}
++extern "C" void sdk_morph_midi_clear(){morph_midi.clear();}
++extern "C" bool sdk_morph_midi_take(u32* value) {
++    if(!morph_midi.pending)return false;
++    const opxy::morphmidi::Latest event=morph_midi;morph_midi.clear();
++    if(!value || event.epoch!=morph_midi_epoch || !morph_live_context() ||
++       muted(kMorphHost) || !morph_check(morph_session))return false;
++    *value=event.value;return true;
++}
++extern "C" bool sdk_morph_movement_has_locks() {
++    if(!morph_live_context() || !morph_check(morph_session))return false;
++    const u32 block=stock<u32(u32)>(0x8d587708)(kMorphHost);
++    if(!block)return false;
++    // Same per-step mask layout as aux_tracks.cpp first_step_value.
++    for(u32 step=0;step<128u;++step)
++        if(word(block+0x2c58u+step*8u)&(1u<<3u))return true;
++    return false;
++}
++extern "C" bool sdk_morph_movement_lfo_active() {
++    if(!morph_live_context() || !morph_check(morph_session) ||
++       !hosts[kMorphHost] || !hosts[kMorphHost]->shared_lfo)return false;
++    const u32 block=stock<u32(u32)>(0x8d587708)(kMorphHost);
++    const u32 held=word(0x080376e4u+25u*4u);
++    // Same enable byte and tagged slot as sdk_lfo_held_amount below.
++    return block && byte(block+0x24u) && (held&0xffff0000u)==0xab030000u;
++}
++extern "C" bool sdk_morph_movement_record(i32 value) {
++    if(!morph_live_context() || muted(kMorphHost) || value<0 ||
++       byte(kSelectedTrack)!=kMorphHost || !morph_check(morph_session))return false;
++    const u32 block=stock<u32(u32)>(0x8d587708)(kMorphHost);
++    if(!block)return false;
++    *at<i32>(block+0x3864u+12u)=value;
++    param_set(kProject,kMorphHost,3u,value);
++    return true;
++}
++extern "C" bool sdk_morph_stored_current_read(u32 track,u32 index,i32* out) {
++    if(!morph_live_context() || muted(kMorphHost) || !out ||
++       track>=control::tracks || !opxy::morphport::supported(index))return false;
++    // If a pickup already owns a project/scene/pattern session, never sample
++    // values from a different context.
++    if(morph_session.active && !morph_check(morph_session))return false;
++    const u32 block=stock<u32(u32)>(0x8d587708)(track);
++    if(!block)return false;
++    if(index>=64u) {
++        namespace row=opxy::platform::synth_shift;
++        const opxy::morphport::ShiftSchema r=morph_schema(track);
++        const u32 entry=index-64u;
++        *out=entry>=r.count || r.choices[entry]==row::kAbsent ? 0 :
++            static_cast<i32>(row::bounded(row::field(base(track,row::word_of(entry)),entry,r.defaults),r.choices[entry]));
++        return true;
++    }
++    const i32 v=base(track,index);
++    if(v<0)return false;
++    *out=v;return true;
++}
++// Bounded, all-or-nothing stored reads under paired full session checks.
++// No cached context authorization crosses a batch or a GUI tick.
++extern "C" bool sdk_morph_stored_batch_read(u32 track,const u32* indices,u32 count,i32* out) {
++    if(!indices || !out || track>=8u || !count || count>34u ||
++       !morph_live_context() || muted(kMorphHost) || !morph_check(morph_session))return false;
++    const u32 block=stock<u32(u32)>(0x8d587708)(track);
++    if(!block)return false;
++    const opxy::morphport::ShiftSchema schema=morph_schema(track);
++    i32 pending[34];
++    for(u32 i=0;i<count;++i){
++        const u32 index=indices[i];
++        if(!opxy::morphport::supported(index))return false;
++        if(index>=64u){
++            namespace row=opxy::platform::synth_shift;
++            const u32 entry=index-64u;
++            pending[i]=entry>=schema.count || schema.choices[entry]==row::kAbsent?0:
++                static_cast<i32>(row::bounded(row::field(base(track,row::word_of(entry)),entry,schema.defaults),schema.choices[entry]));
++        } else {
++            pending[i]=static_cast<i32>(word(block+0x3864u+index*4u));
++            if(pending[i]<0)return false;
++        }
++    }
++    if(!morph_check(morph_session) || stock<u32(u32)>(0x8d587708)(track)!=block)return false;
++    for(u32 i=0;i<count;++i)out[i]=pending[i];
++    return true;
++}
++extern "C" bool sdk_morph_stored_once_submit(u32 track,u32 index,i32 value) {
++    if(!morph_live_context() || muted(kMorphHost) || !morph_check(morph_session) ||
++       track>=control::tracks || !opxy::morphport::supported(index) ||
++       value<0 ||
++       !morph_overlay || morph_overlay->stored_count>=control::store_capacity)return false;
++    if(index>=64u) {
++        namespace row=opxy::platform::synth_shift;
++        const opxy::morphport::ShiftSchema r=morph_schema(track);
++        const u32 entry=index-64u;
++        if(entry>=r.count || r.choices[entry]==row::kAbsent ||
++           static_cast<u32>(value)>row::top(r.choices[entry]))return false;
++        const u32 packed=row::word_of(entry);
++        for(u32 i=0;i<morph_overlay->stored_count;++i) {
++            control::Entry& e=morph_overlay->stored[i];
++            if(e.track==track && e.index==packed) {
++                e.value=row::with(e.value,entry,static_cast<u32>(value),r.defaults);
++                return true;
++            }
++        }
++        value=row::with(base(track,packed),entry,static_cast<u32>(value),r.defaults);
++        index=packed;
++    }
++    const u32 block=stock<u32(u32)>(0x8d587708)(track);
++    if(!block)return false;
++    // Do not silently coalesce two writes to one parameter in a single tick.
++    for(u32 i=0;i<morph_overlay->stored_count;++i)
++        if(morph_overlay->stored[i].track==track && morph_overlay->stored[i].index==index)return false;
++    const u32 pos=morph_overlay->stored_count;
++    const i32 before=base(track,index);
++    if(before<0 || !control::store(*morph_overlay,track,index,value))return false;
++    morph_pending[pos].block=block;
++    morph_pending[pos].current=before;
++    morph_pending[pos].accepted=true;
++    return true; // queued, not yet applied; caller MUST verify via readback.
++}
++extern "C" u32 sdk_morph_stored_once_take_feedback() {
++    if(!morph_live_context())return 0u;
++    const u32 prior=morph_skips;
++    morph_skips=0u;
++    return prior;
++}
++extern "C" bool sdk_morph_session_context_begin() {
++    if(!morph_live_context() || muted(kMorphHost))return false;
++    const u32 project=word(0x840a0524);
++    u32 blocks[control::tracks];morph_blocks(blocks);
++    for(u32 t=0;t<control::tracks;++t)if(!blocks[t])return false;
++    morph_schema_capture(morph_session);
++    morph_session.aux_block=stock<u32(u32)>(0x8d587708)(kMorphHost);
++    morph_session.begin(project,byte(project+6u),blocks);
++    morph_midi.clear();if(++morph_midi_epoch==0u)++morph_midi_epoch;
++    return morph_check(morph_session);
++}
++extern "C" bool sdk_morph_session_context_ok() {
++    return morph_live_context() && morph_check(morph_session);
++}
++// GUI-thread read-only view: the session outlives the control callback.
++// Revalidate owner, project, scene and all instrument blocks on every read.
++// This grants no queue, write permission, or controller-callback lifetime.
++extern "C" bool sdk_morph_view_context_ok() {
++    return morph_check(morph_session);
++}
++extern "C" bool sdk_morph_view_current_read(u32 track,u32 index,i32* out) {
++    if(!out || track>=control::tracks || !opxy::morphport::supported(index) ||
++       !sdk_morph_view_context_ok())return false;
++    const i32 value=base(track,index);
++    if(value<0 || !sdk_morph_view_context_ok())return false;
++    *out=value;return true;
++}
++// One GUI snapshot reads one block under a pair of whole-session checks.
++// Validate everything before publishing, without N repeated owner/block scans.
++extern "C" bool sdk_morph_view_current_batch(u32 track,const u32* indices,u32 count,i32* out) {
++    if(!indices || !out || track>=control::tracks || count==0u || count>26u ||
++       !sdk_morph_view_context_ok())return false;
++    for(u32 i=0;i<count;++i)if((!opxy::morphport::supported(indices[i]) || indices[i]>=64u))return false;
++    const u32 block=stock<u32(u32)>(0x8d587708)(track);
++    if(!block)return false;
++    i32 pending[26];
++    for(u32 i=0;i<count;++i) {
++        pending[i]=static_cast<i32>(word(block+0x3864u+indices[i]*4u));
++        if(pending[i]<0)return false;
++    }
++    if(!sdk_morph_view_context_ok())return false;
++    for(u32 i=0;i<count;++i)out[i]=pending[i];
++    return true;
++}
++// Same guarded snapshot pass; three extra scalar values for stock HUD artwork.
++extern "C" bool sdk_morph_view_visual_batch(u32 track,const u32* indices,i32* out,u32* filter,i32* play,i32* bend) {
++    if(!indices || !out || !filter || !play || !bend || track>=8u || !sdk_morph_view_context_ok())return false;
++    for(u32 i=0;i<26u;++i)if(!opxy::morphport::supported(indices[i]) || indices[i]>=64u)return false;
++    const u32 block=stock<u32(u32)>(0x8d587708)(track);
++    if(!block)return false;
++    i32 pending[26];
++    for(u32 i=0;i<26u;++i){pending[i]=static_cast<i32>(word(block+0x3864u+indices[i]*4u));if(pending[i]<0)return false;}
++    // Stock filter frame 0x8d539660 calls 0x8d5878d4(track), which
++    // reads this stored block +0x28. Do not substitute the audio-side table.
++    const u32 type=word(block+0x28u);
++    const i32 pm=static_cast<i32>(word(block+0x3864u+12u*4u));
++    const i32 br=static_cast<i32>(word(block+0x3864u+14u*4u));
++    if(!sdk_morph_view_context_ok())return false;
++    for(u32 i=0;i<26u;++i)out[i]=pending[i];
++    *filter=type;*play=pm;*bend=br;return true;
++}
++extern "C" void sdk_morph_session_context_end() {
++    morph_midi.clear();morph_session.clear();}
++extern "C" bool sdk_morph_setbase_context_begin() {
++    if(!morph_live_context() || muted(kMorphHost))return false;
++    const u32 project=word(0x840a0524);
++    u32 blocks[control::tracks];morph_blocks(blocks);
++    for(u32 t=0;t<control::tracks;++t)if(!blocks[t])return false;
++    morph_schema_capture(morph_setbase);
++    morph_setbase.aux_block=stock<u32(u32)>(0x8d587708)(kMorphHost);
++    morph_setbase.begin(project,byte(project+6u),blocks);
++    morph_setbase_skips=0u;
++    return morph_check(morph_setbase);
++}
++extern "C" bool sdk_morph_setbase_context_ok() {
++    return morph_live_context() && morph_check(morph_setbase);
++}
++extern "C" bool sdk_morph_setbase_current_read(u32 track,u32 index,i32* out) {
++    return sdk_morph_setbase_context_ok() && sdk_morph_stored_current_read(track,index,out);
++}
++extern "C" void sdk_morph_setbase_context_end() {morph_setbase.clear();}
++extern "C" u32 sdk_morph_setbase_take_feedback() {
++    if(!morph_live_context())return 0u;
++    const u32 prior=morph_setbase_skips;
++    morph_setbase_skips=0u;
++    return prior;
++}
++
+ extern "C" i32 sdk_control_display(u32 index) {
+     const u32 track = selected_track();
+     return track < control::all_tracks && index < control::display_words ? shown_words[track][index] : 0;
+@@ -384,6 +760,7 @@ extern "C" void sdk_param_edit_set(u32 project, u32 track, u32 index, i32 value)
+ // Called by project load/new-project handling before another GUI tick. It
+ // must not dereference stock's project while deserialization is in progress.
+ extern "C" void sdk_control_forget() {
++    morph_reset_bridge();
+     sdk_synth_queue_page_key(kNoTrack, 0);
+     applied_count = wanted_count = 0;
+     turned_track = kNoTrack;
+@@ -401,10 +778,12 @@ extern "C" void sdk_control_forget() {
+     release_all = held_count != 0;
+ }
+ 
++extern "C" void sdk_morph_gui_sample_turns() __asm__("sdk_morph_gui_sample_turns");
+ extern "C" void sdk_gui_tick() {
+     stock<void()>(0x8d580074)();
+     ++gui_ticks;
+     sdk_synth_pages();
++    sdk_morph_gui_sample_turns(); // V1 sampling point, before machine callbacks.
+     if (!sdk_control_machine_count && !applied_count) return;
+     // The turn hooks (synth_controls.cpp) reach this service through a pointer,
+     // set here so it is set only where the service is linked.
+@@ -459,6 +838,8 @@ extern "C" void sdk_gui_tick() {
+     for (u32 t = 0; t < control::all_tracks; ++t) {
+         const ControlMachine* m = owner(t);
+         if (m && m->unique && sdk_control_copies(t) > 1) m = nullptr;
++        if(t==kMorphHost && (!m || !m->unique || !morph_identity(m->name)))
++            morph_reset_bridge();
+         const u32 copy = m && !m->unique ? t : 0;
+         if (m != hosts[t]) {
+             release_host(t);
+@@ -504,7 +885,14 @@ extern "C" void sdk_gui_tick() {
+         overlay.note_count = 0;
+         overlay.own_turns = 0;
+         for (u32 i = 0; i < control::display_words; ++i) overlay.display[i] = 0;
++        // Private Morph calls are valid ONLY inside the unique AUX/CV callback.
++        // All other SDK machines retain stock v0.0.6 behavior.
++        morph_callback=t==kMorphHost && morph_unique_owner();
++        morph_overlay=morph_callback ? &overlay : nullptr;
++        if(morph_callback)
++            for(u32 i=0;i<control::store_capacity;++i)morph_pending[i].accepted=false;
+         m->control(copy, &input, &overlay);
++        morph_callback=false;morph_overlay=nullptr;
+         owning[t] = overlay.own_turns != 0;
+         if (input.muted) {
+             overlay.note_count = 0;
+diff --git a/tests/fixtures/aux_tracks.cpp b/tests/fixtures/aux_tracks.cpp
+index 7a5e01d..b3bf1d0 100644
+--- a/tests/fixtures/aux_tracks.cpp
++++ b/tests/fixtures/aux_tracks.cpp
+@@ -2,6 +2,7 @@
+ #include <cstdio>
+ #include <cstdlib>
+ #include <aux_tracks.cpp>
++extern "C" opxy::u32 sdk_control_copies(opxy::u32) { return 1; }
+ 
+ namespace {
+ const u32 host_project = 0x90000000;
+diff --git a/tests/fixtures/morph_contracts.cpp b/tests/fixtures/morph_contracts.cpp
+new file mode 100644
+index 0000000..8c6e2df
+--- /dev/null
++++ b/tests/fixtures/morph_contracts.cpp
+@@ -0,0 +1,40 @@
++// SDK bridge contracts only; no Morph machine source or firmware inputs.
++#include <opxy/morph_aux_events.hpp>
++#include <opxy/morph_pad_input.hpp>
++#include <opxy/morph_midi_input.hpp>
++#include <opxy/morph_store_bridge.hpp>
++#include <opxy/morph_hud_raw_turn.hpp>
++#include <opxy/morph_hud_contract.hpp>
++#include <cstdio>
++#include <cstdlib>
++static unsigned checks;
++static void require(bool value) { ++checks; if (!value) { std::fprintf(stderr,"Morph contract %u failed\n",checks); std::exit(1); } }
++int main() {
++    using opxy::u32; using opxy::i32;
++    opxy::platform::MorphAuxEvents events={};
++    events.click(0); events.click(3); events.click(4);
++    events.turn(0,0x7fffffff); events.turn(0,1); events.turn(1,(-0x7fffffff-1)); events.turn(1,-1);
++    u32 clicks=0; i32 turns[4]={}; events.take(&clicks,turns);
++    require(clicks==9 && turns[0]==32767 && turns[1]==-32768);
++    events.take(&clicks,turns); require(clicks==0 && turns[0]==0 && turns[1]==0);
++    opxy::morphpad::Input pad={};
++    pad.request(true,10); require(!pad.event(15)); require(!pad.event(0));
++    require(pad.owned); require(pad.event(20));
++    pad.request(false,20); require(pad.event(0)); require(!pad.owned); require(!pad.event(20));
++    for(u32 track=0;track<16;++track) for(u32 cc=0;cc<128;++cc)
++        require(opxy::morphmidi::matches(track,cc,127)==(track==11 && cc==15));
++    require(!opxy::morphmidi::matches(11,15,128));
++    opxy::morphport::Session session={}; u32 blocks[8]={1,2,3,4,5,6,7,8};
++    require(!session.matches(1,0,blocks)); session.begin(1,2,blocks); require(session.matches(1,2,blocks));
++    require(!session.matches(2,2,blocks)); require(!session.matches(1,3,blocks));
++    for(u32 i=0;i<8;++i){ ++blocks[i];require(!session.matches(1,2,blocks));--blocks[i]; }
++    session.clear();require(!session.matches(1,2,blocks));
++    morph_raw_turn::Sampler sampler={};u32 raw[4]={};i32 steps[4]={};
++    sampler.sample(raw,false,false,steps);raw[0]=1;sampler.sample(raw,false,false,steps);require(steps[0]==0);
++    raw[0]=2;sampler.sample(raw,false,false,steps);require(steps[0]==1);
++    raw[0]=3;sampler.sample(raw,true,false,steps);require(steps[0]==0);
++    raw[0]=4;sampler.sample(raw,true,true,steps);require(steps[0]==0);
++    require(morphcapture::hud::event_valid({morphcapture::hud::SetS,7}));
++    require(!morphcapture::hud::event_valid({morphcapture::hud::SetS,8}));
++    std::printf("PASS: %u Morph bridge contract checks\n",checks);
++}
+diff --git a/tests/fixtures/track_control.cpp b/tests/fixtures/track_control.cpp
+index 9d800a7..3b98264 100644
+--- a/tests/fixtures/track_control.cpp
++++ b/tests/fixtures/track_control.cpp
+@@ -4,7 +4,11 @@
+ #include <cstdio>
+ #include <cstdlib>
+ #include <initializer_list>
++#include "synth_controls.hpp"
++const opxy::platform::SynthControls sdk_synth_controls[1]={};
++const opxy::u32 sdk_synth_control_count=0;
+ #include <track_control.cpp>
++extern "C" void sdk_morph_gui_sample_turns() {}
+ 
+ namespace {
+ using opxy::i32;
+diff --git a/tests/test_morph_bridge.py b/tests/test_morph_bridge.py
+new file mode 100644
+index 0000000..2c53c1a
+--- /dev/null
++++ b/tests/test_morph_bridge.py
+@@ -0,0 +1,43 @@
++"""Experimental Morph bridge: bounded inputs and authenticated physical hooks."""
++from pathlib import Path
++import os
++import subprocess
++import tempfile
++import unittest
++from tooling.pipeline import ROOT, config
++from tooling.formats import ldr, mapped_offset, sha
++from test_sample_services import HOST_CXX
++
++
++class MorphBridge(unittest.TestCase):
++    @unittest.skipUnless(HOST_CXX, 'No working host C++ compiler')
++    def test_bounded_input_and_context_contracts(self):
++        with tempfile.TemporaryDirectory(prefix='morph-contracts-') as directory:
++            binary = Path(directory) / ('contracts.exe' if os.name == 'nt' else 'contracts')
++            result = subprocess.run([HOST_CXX, '-std=c++11', '-O2', '-Wall', '-Werror',
++                                     '-I' + str(ROOT / 'sdk/include'),
++                                     str(ROOT / 'tests/fixtures/morph_contracts.cpp'), '-o', str(binary)],
++                                    capture_output=True, text=True)
++            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
++            result = subprocess.run([str(binary)], capture_output=True, text=True)
++            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
++            self.assertIn('Morph bridge contract checks', result.stdout)
++
++    def test_physical_hook_scope(self):
++        hooks = [p for p in config()['patches'] if p.get('symbol', '').startswith('sdk_morph_')]
++        self.assertEqual([(p['symbol'], int(p['address'], 16), p['length'], p['service'], p['call'])
++                          for p in hooks],
++                         [('sdk_morph_midi_cc', 0x8d58e818, 4, 'control', True),
++                          ('sdk_morph_pad_event', 0x8d5b27f6, 4, 'control', True)])
++
++    @unittest.skipUnless(os.environ.get('OPXY_TEST_STOCK_OS'), 'No private stock OS fixture')
++    def test_hook_preimages_match_private_stock(self):
++        data = Path(os.environ['OPXY_TEST_STOCK_OS']).read_bytes()
++        profile = config()
++        self.assertEqual(sha(data), profile['stock_sha256'])
++        for patch in profile['patches']:
++            if not patch.get('symbol', '').startswith('sdk_morph_'):
++                continue
++            offset = mapped_offset(ldr(data), int(patch['address'], 16), patch['length'])
++            self.assertEqual(offset, int(patch['file_offset'], 16))
++            self.assertEqual(data[offset:offset + patch['length']].hex(), patch['before'])
+diff --git a/tests/test_track_control.py b/tests/test_track_control.py
+index b205b7c..dc04e88 100644
+--- a/tests/test_track_control.py
++++ b/tests/test_track_control.py
+@@ -239,7 +239,7 @@ class TrackControl(unittest.TestCase):
+         aux.definition['resources']['trackControl'].update(unique=True, aux=[12])
+         hooks = [p for p in config()['patches'] if p.get('service') == 'control' and p['kind'] == 'hook']
+         self.assertEqual(sorted(p['symbol'] for p in hooks),
+-                         ['sdk_gui_tick', 'sdk_param_edit_set', 'sdk_param_shown_hook'] + ['sdk_param_step_set'] * 3 +
++                         ['sdk_gui_tick', 'sdk_morph_midi_cc', 'sdk_morph_pad_event', 'sdk_param_edit_set', 'sdk_param_shown_hook'] + ['sdk_param_step_set'] * 3 +
+                          ['sdk_project_clear',
+                           'sdk_project_clear_random'])
+         # Aux tracks are a service of their own: its hooks and MTP allowlist edits.
+diff --git a/tooling/adapters.py b/tooling/adapters.py
+index 2fcc449..c9064bc 100644
+--- a/tooling/adapters.py
++++ b/tooling/adapters.py
+@@ -350,6 +350,10 @@ extern "C" unsigned {prefix}_display_validate(const Frame* frame) {{
+ 
+ def generate_registration(directory, m):
+     """A machine's stock record (and own screen) for the SDK's checked registration."""
++    if m.id == 'm3probe':
++        require(m.kind == 'effect' and m.display == 'stock' and m.identity['effect'] == 11,
++                'M3 probe needs ID 11 from the isolated layout')
++        return expand('m3_probe.cpp.in', RELOCATED, Path(directory) / 'registration.cpp')
+     p, effect = m.prefix, m.kind == 'effect'
+     name = m.native_name.encode('ascii')
+     require(1 <= len(name) <= 15 and b'\0' not in name, 'Unsupported inline engine name')
+diff --git a/tooling/m3_copy_sites.py b/tooling/m3_copy_sites.py
+new file mode 100644
+index 0000000..fab385e
+--- /dev/null
++++ b/tooling/m3_copy_sites.py
+@@ -0,0 +1,28 @@
++"""Locate full-pattern copy paths in the exact stock OS used for this build."""
++import json
++from pathlib import Path
++
++
++def prepare(sdk, image_path):
++    from tooling.formats import ldr, mapped_offset, require, sha
++    from tooling.firmware import absolute_call
++
++    stock = Path(image_path).read_bytes()
++    profile = json.loads((sdk / 'profiles/opxy-1.2.1.json').read_text())
++    require(sha(stock) == profile['stock_sha256'], 'Expected stock OP-XY OS 1.2.1')
++    blocks = ldr(stock)
++    memcpy = absolute_call(0x040201c4)
++    sites = []
++    # Only the project editor: clipboard, paste, duplicate and add pattern.
++    # Each redirected call always performs the original copy. The adapter
++    # mirrors settings only for an exact pattern length and a known endpoint.
++    for first, last in ((0x8d5819cc, 0x8d581e00), (0x8d587b3c, 0x8d587e00)):
++        start = mapped_offset(blocks, first, last-first)
++        for offset in range(0, last-first-7, 2):
++            if stock[start+offset:start+offset+8] == memcpy:
++                sites.append(dict(kind='hook', address=hex(first+offset), file_offset=hex(start+offset),
++                                  length=8, before=memcpy.hex(), symbol='m3_copy', call=True))
++    addresses = [int(s['address'], 16) for s in sites]
++    require(0x8d581a5e in addresses, 'Pattern clipboard copy differs from the SDK audit')
++    require(any(0x8d581a74 <= a < 0x8d581d48 for a in addresses), 'Pattern paste copy not identified')
++    (sdk / 'm3-copy-sites.json').write_text(json.dumps(sites))
+diff --git a/tooling/native.py b/tooling/native.py
+index 8c98c79..c09f885 100644
+--- a/tooling/native.py
++++ b/tooling/native.py
+@@ -19,7 +19,7 @@ import tempfile
+ import xml.etree.ElementTree as ET
+ 
+ from . import benchmark, extensions, release_floor, runtime, screen, startup_label, stock_content, stock_limits, stock_tables
+-from .adapters import (pad_mix, sends_per_key, aux_preset_files, catalog_entry, check_aux_presets, generate_control, generate_display, generate_fx_object,
++from .adapters import (pad_mix, sends_per_key, aux_preset_files, catalog_defaults, catalog_entry, check_aux_presets, generate_control, generate_display, generate_fx_object,
+                        generate_player_object, generate_player_table, generate_registration,
+                        generate_registration_stock, generate_sample_voice,
+                        generate_sample_callbacks, generate_screen, generate_screen_order,
+@@ -116,6 +116,31 @@ def configuration(entries=None, layout=None):
+     require([p['kind'] for p in profile['patches']].count('startup') == 1, 'Expected one startup label edit')
+     machines = Collection(collection(entries, layout), extensions.check_collection(
+         [extensions.extension_at(e['extension']) for e in entries or () if 'extension' in e]))
++    has_probe = any(machine.id == 'm3probe' for machine in machines)
++    if has_probe:
++        probe = next(m for m in machines if m.id == 'm3probe')
++        require(probe.identity['effect'] == 11, 'Trine needs filter ID 11')
++        require(not any(m.identity.get('page') in (82, 83) for m in machines),
++                'Trine needs display pages 82 and 83')
++        enabled = active_services(profile, service_users(machines))
++        require(not {'drum_locks', 'master_filter'}.intersection(enabled),
++                'Trine shares firmware hooks with the drum-lock and master-filter services')
++        for hook in profile['patches']:
++            replacements = {'sdk_master_receive': 'm3_receive', 'sdk_master_project': 'm3_project',
++                            'sdk_project_new': 'm3_new', 'sdk_lock_step': 'm3_step'}
++            if hook.get('symbol') in replacements:
++                hook['symbol'] = replacements[hook['symbol']]
++                del hook['service']
++        profile['patches'].extend([
++            dict(kind='hook', address='0x8d506c3e', file_offset='0x13de9a', length=4,
++                 before='ffe37ffd', symbol='m3probe_filter_init', call=True),
++            dict(kind='hook', address='0x8c0b2a6c', file_offset='0xe9ca8', length=8,
++                 before='00e80200e505866f', symbol='m3_setup_click', call=False),
++        ])
++        copies = ROOT / 'm3-copy-sites.json'
++        if copies.exists():
++            profile['patches'].extend(json.loads(copies.read_text()))
++        check_patch_boundaries(profile, len(profile['patches']))
+     definitions = dict(DEFINITIONS)
+     for m in machines:
+         if m.kind == 'player':
+@@ -177,7 +202,7 @@ def check_sources(machines):
+                 validate_source_boundary(path.read_text(encoding='utf-8'), m.source(path.relative_to(m.root).as_posix()))
+ 
+ 
+-def compile_cxx(cxx, assembler, source, obj, includes=()):
++def compile_cxx(cxx, assembler, source, obj, includes=(), defines=()):
+     """cc1plus via the driver to assembly, then the pinned assembler.
+ 
+     The driver never chooses an assembler, so object bytes depend only on the
+@@ -187,7 +212,7 @@ def compile_cxx(cxx, assembler, source, obj, includes=()):
+     obj = Path(obj).resolve()
+     assembly = obj.with_suffix('.s')
+     generated = Path(source).is_absolute()
+-    flags = [*CXX_FLAGS, *('-I' + str((ROOT / path).resolve()) for path in includes), '-fstack-usage']
++    flags = [*CXX_FLAGS, *defines, *('-I' + str((ROOT / path).resolve()) for path in includes), '-fstack-usage']
+     subprocess.run([str(cxx), *flags, '-S', Path(source).name if generated else source, '-o', str(assembly)],
+                    cwd=Path(source).parent if generated else ROOT, check=True, capture_output=True, text=True,
+                    timeout=300, **hidden_process())
+@@ -532,7 +557,8 @@ def compile_collection(directory, toolchain, compiler, profile, machines, defini
+         execute([tools['as'], '-mcpu=bf707', '-I', ROOT, '-o', obj, source])
+ 
+     def cxx(source, obj, m=None):
+-        compile_cxx(gcc['cxx'], tools['as'], source, obj, includes(m))
++        compile_cxx(gcc['cxx'], tools['as'], source, obj, includes(m),
++                    ['-DM3_RESONATOR'] if any(item.id == 'm3probe' for item in machines) else [])
+ 
+     def display_unit(folder, m):
+         generate_display(folder, machine=m)
+@@ -1086,6 +1112,8 @@ def extend_catalog(catalog, profile, machines):
+     The insertion offsets are bound to the exact authenticated stock catalog.
+     """
+     listed = [m for m in machines if catalog_entry(m)]  # aux machines are not in tracks 1-8's list
++    probes = [m for m in listed if m.id == 'm3probe']
++    listed = [m for m in listed if m.id != 'm3probe']
+     groups = dict(engine_types=by_kind(listed, 'synth', 'drum', 'sample'), fx_types=by_kind(listed, 'effect'),
+                   seq_types=by_kind(listed, 'player'))
+     result, base = catalog, json.loads(catalog)
+@@ -1093,7 +1121,20 @@ def extend_catalog(catalog, profile, machines):
+         result = result[:at] + ''.join(catalog_entry(m) for m in groups[key]).encode('utf-8') + result[at:]
+     added = {key: [json.loads(catalog_entry(m).strip().lstrip(',')) for m in group] for key, group in groups.items()}
+     require(all(len(entry['default_params']) == 8 for group in added.values() for entry in group), 'Invalid catalog entry')
+-    require(json.loads(result) == dict(base, **{key: base[key] + added[key] for key in groups}),
++    if probes:
++        require(len(probes) == 1 and probes[0].kind == 'effect' and probes[0].identity['effect'] == 11,
++                'Invalid M3 probe identity')
++        probe = probes[0]
++        defaults = catalog_defaults(probe.definition)
++        rows = [dict(type='trine', id=probe.identity['effect'], default_params=defaults)]
++        occupied = [row['id'] for key in ('fx_types', 'filter_types') for row in json.loads(result)[key]]
++        require(all(row['id'] not in occupied for row in rows), 'M3 A/B ID already present in catalog')
++        start = result.index(b'[', result.index(b'"filter_types"'))
++        _, end = json.JSONDecoder().raw_decode(result[start:].decode('ascii'))
++        at = start + end - 1
++        result = result[:at] + b''.join(b', ' + json.dumps(row).encode('ascii') for row in rows) + result[at:]
++        added['filter_types'] = rows
++    require(json.loads(result) == dict(base, **{key: base[key] + entries for key, entries in added.items()}),
+             'Unexpected catalog modification')
+     return result
+ 
+@@ -1101,6 +1142,10 @@ def extend_catalog(catalog, profile, machines):
+ def prepare_assets(catalog, profile, machines):
+     require(sha(catalog) == profile['stock_catalog_sha256'], 'Stock catalog hash mismatch')
+     outputs = {'content/op1_factory.json': extend_catalog(catalog, profile, machines)}
++    for machine in machines:
++        if machine.id == 'm3probe':
++            for artwork in ('m3_main.svg', 'm3_setup.svg'):
++                outputs[f'content/display/{artwork}'] = Path(machine.source(artwork)).read_bytes()
+     owners = {}  # every file a machine or extension adds, by who adds it
+     for m in machines:
+         if m.display != 'stock':
+@@ -1307,6 +1352,11 @@ def main(argv=None, command=None):
+                     f'(a copy of the device\'s /content): {args.stock_content}')
+         # A package records the collection it was built from.
+         entries = package_collection(args.package) if command == 'verify' else selected_collection(args)
++        if command == 'build' and any(Path(m).resolve().joinpath('definition.json').is_file()
++                                      and json.loads((Path(m)/'definition.json').read_text()).get('id') == 'm3probe'
++                                      for m in args.machine):
++            from .m3_copy_sites import prepare
++            prepare(ROOT, args.stock_os)
+         layout = read_layout(args.layout, build=command == 'build') if command != 'verify' and args.layout else None
+         profile, machines, definitions = configuration(entries, layout)
+         tools = resolve_toolchain(args.toolchain, args.compiler)
+diff --git a/tooling/startup.py b/tooling/startup.py
+index e2d70c6..c5ebdec 100644
+--- a/tooling/startup.py
++++ b/tooling/startup.py
+@@ -75,6 +75,9 @@ def render(prefixes, effects=(), stock_page=(), sample_screens=(), effect_screen
+     # An effect is registered on both roles already; its page, which its record
+     # names, is ready once its screen is in place.
+     screens = [f'    {prefix}_screen_register();' for prefix in effect_screens]
++    if 'm3probe' in effects:
++        declarations.append(_declare('m3_setup_register'))
++        screens.append('    m3_setup_register();')
+     for prefix in prefixes:
+         guard = '' if prefix in stock_page else f'if ({prefix}_screen_register() == 1) '
+         # A sample engine's own screen never holds back the engine: it plays without it.

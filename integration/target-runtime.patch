@@ -1,0 +1,80 @@
+diff --git a/tooling/native.py b/tooling/native.py
+index 9baebf4..6b458bc 100644
+--- a/tooling/native.py
++++ b/tooling/native.py
+@@ -396,8 +396,13 @@ def runtime_objects(directory, gcc, units, definitions):
+     inputs = [read(Path(directory) / name) for name, _m, _step in units]
+     if not runtime.needs_runtime(inputs, definitions):
+         return []
+-    require(gcc['runtime'] is not None, 'This compiler profile has no authenticated arithmetic runtime')
+-    archive = runtime.archive_members(read(gcc['runtime']))
++    if gcc['runtime'] is None and host_platform() == 'darwin-arm64':
++        from .target_runtime import for_mac
++        data = for_mac(gcc['cxx'])
++    else:
++        require(gcc['runtime'] is not None, 'This compiler profile has no authenticated arithmetic runtime')
++        data = read(gcc['runtime'])
++    archive = runtime.archive_members(data)
+     candidates = {name: runtime.normalize_member(data) for name, data in archive.items()
+                   if name.endswith('.o') and name[:-2] in runtime.MEMBERS}
+     members = runtime.select(inputs, candidates, definitions)
+diff --git a/tooling/target_runtime.py b/tooling/target_runtime.py
+new file mode 100644
+index 0000000..e4f6b1e
+--- /dev/null
++++ b/tooling/target_runtime.py
+@@ -0,0 +1,54 @@
++"""Verified Blackfin arithmetic objects for the pinned cross-compiler."""
++import fcntl
++import os
++from pathlib import Path
++import tempfile
++import zipfile
++
++from . import runtime
++from .formats import require, sha
++from .pipeline import toolchains
++
++
++def read_archive(path, expected):
++    if path.is_file() and path.stat().st_size <= 16 * 1024 * 1024:
++        data = path.read_bytes()
++        if sha(data) == expected:
++            return data
++    return None
++
++
++def for_mac(compiler):
++    from .native import file_hash
++    from .toolchain import download
++
++    release = toolchains()['hosts']['windows-x86_64']
++    expected = release['compiler'][runtime.ARCHIVE]
++    record = release['download']
++    local = read_archive(compiler.parent.parent / runtime.ARCHIVE, expected)
++    if local is not None:
++        return local
++    workspace = Path(os.environ.get('XY_MANAGER_HOME', '~/Documents/OP-XY Manager')).expanduser()
++    cache = workspace / 'machine-library' / 'target-runtime' / expected
++    cache.mkdir(parents=True, exist_ok=True)
++    with (cache / 'fetch.lock').open('a') as lock:
++        fcntl.flock(lock, fcntl.LOCK_EX)
++        target = cache / 'libgcc.a'
++        data = read_archive(target, expected)
++        if data is not None:
++            return data
++        with tempfile.TemporaryDirectory(dir=cache) as temp:
++            temp = Path(temp)
++            package = temp / 'toolchain.zip'
++            print('Fetching the SDK-pinned Blackfin arithmetic library for this build.', flush=True)
++            download(record['url'], package)
++            require(file_hash(package) == record['sha256'], 'Blackfin toolchain ZIP checksum mismatch')
++            with zipfile.ZipFile(package) as archive:
++                member = archive.getinfo(record['folder'] + '/' + runtime.ARCHIVE)
++                require(0 < member.file_size <= 16 * 1024 * 1024, 'Invalid Blackfin runtime size')
++                data = archive.read(member)
++            require(sha(data) == expected, 'Blackfin arithmetic library checksum mismatch')
++            staged = temp / 'libgcc.a'
++            staged.write_bytes(data)
++            staged.replace(target)
++            return data

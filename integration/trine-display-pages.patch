@@ -1,0 +1,95 @@
+diff --git a/sdk/platform/opxy-1.2.1/m3_setup_ui.hpp b/sdk/platform/opxy-1.2.1/m3_setup_ui.hpp
+index 4561128..593f1c4 100644
+--- a/sdk/platform/opxy-1.2.1/m3_setup_ui.hpp
++++ b/sdk/platform/opxy-1.2.1/m3_setup_ui.hpp
+@@ -9,7 +9,7 @@ using namespace m3_resonator;
+ constexpr u32 tracks = 8, patterns = 16, slots = tracks * patterns;
+ constexpr u32 pattern_bytes = 0x53f4, track_bytes = 0x53f44;
+ constexpr u32 clipboard = 0x84ffd208, private_message = 128;
+-constexpr u32 setup_page = 82, main_page = 83;
++constexpr u32 setup_page = M3_SETUP_PAGE, main_page = M3_MAIN_PAGE;
+ constexpr u32 initial_settings = unsigned(Exciter::Pulse);
+ struct Settings { u32 word[slots]; };
+ Settings saved, pending;
+diff --git a/tooling/native.py b/tooling/native.py
+index c09f885..f594b1a 100644
+--- a/tooling/native.py
++++ b/tooling/native.py
+@@ -104,6 +104,41 @@ def subset(machines, chosen, chosen_extensions=None):
+     return Collection(chosen, carried if chosen_extensions is None else [e for e in carried if e in chosen_extensions])
+ 
+ 
++def bundle_page_claims(machines, page_count):
++    """Read reservations from the bundle that owns each selected machine."""
++    pages = set()
++    for machine in machines:
++        source = machine.root.resolve()
++        for folder in (source, *source.parents):
++            manifest = folder / 'machine-bundle.json'
++            if not manifest.is_file():
++                continue
++            bundle = document(manifest)
++            if bundle.get('id') != machine.id or Path(bundle.get('machine', '')) != source.relative_to(folder):
++                continue
++            for claim in bundle.get('claims', ()):
++                if claim.startswith('page:'):
++                    page = claim[5:]
++                    require(page.isascii() and page.isdecimal() and len(page) <= len(str(page_count))
++                            and int(page) < page_count, 'Invalid display page claim in ' + machine.id + ': ' + claim)
++                    pages.add(int(page))
++            break
++    return pages
++
++
++def trine_display_pages(profile, machines, layout):
++    """Internal Trine screens, after assigning persistent machine identities."""
++    rules = profile['identities']
++    used = {identity['page'] for identity in FIXED_NUMBERS.values()}
++    used.update(identity['page'] for identity in (layout or {}).values())
++    used.update(machine.identity['page'] for machine in machines)
++    used.update(bundle_page_claims(machines, rules['pages']))
++    # Use the relocatable page range, excluding the SDK's last-page overlay.
++    free = [page for page in range(rules['pages'] - 2, rules['page_none'], -1) if page not in used]
++    require(len(free) >= 2, 'Trine needs two free display pages in this layout')
++    return dict(zip(('setup', 'main'), free[:2]))
++
++
+ def configuration(entries=None, layout=None):
+     """The profile, the collection's machines numbered by the layout (a Collection,
+     carrying its extensions), and their link-time IDs. Entries are
+@@ -120,8 +155,7 @@ def configuration(entries=None, layout=None):
+     if has_probe:
+         probe = next(m for m in machines if m.id == 'm3probe')
+         require(probe.identity['effect'] == 11, 'Trine needs filter ID 11')
+-        require(not any(m.identity.get('page') in (82, 83) for m in machines),
+-                'Trine needs display pages 82 and 83')
++        profile['m3_display_pages'] = trine_display_pages(profile, machines, layout)
+         enabled = active_services(profile, service_users(machines))
+         require(not {'drum_locks', 'master_filter'}.intersection(enabled),
+                 'Trine shares firmware hooks with the drum-lock and master-filter services')
+@@ -556,9 +590,14 @@ def compile_collection(directory, toolchain, compiler, profile, machines, defini
+     def assemble_unit(source, obj):
+         execute([tools['as'], '-mcpu=bf707', '-I', ROOT, '-o', obj, source])
+ 
++    trine_pages = profile.get('m3_display_pages')
++    trine_defines = []
++    if trine_pages:
++        trine_defines = ['-DM3_RESONATOR', f"-DM3_SETUP_PAGE={trine_pages['setup']}",
++                         f"-DM3_MAIN_PAGE={trine_pages['main']}"]
++
+     def cxx(source, obj, m=None):
+-        compile_cxx(gcc['cxx'], tools['as'], source, obj, includes(m),
+-                    ['-DM3_RESONATOR'] if any(item.id == 'm3probe' for item in machines) else [])
++        compile_cxx(gcc['cxx'], tools['as'], source, obj, includes(m), trine_defines)
+ 
+     def display_unit(folder, m):
+         generate_display(folder, machine=m)
+@@ -657,6 +696,8 @@ def compile_collection(directory, toolchain, compiler, profile, machines, defini
+                   linked=[m.id for m in linked],
+                   services=sorted(active_services(profile, service_users(linked))), device_operations=False,
+                   hardware_tested=False, cpu_timing_measured=False)
++    if trine_pages:
++        report['trine_display_pages'] = trine_pages
+     if runtime_members:
+         report['runtime'] = runtime_members
+     save_json(directory / 'compile-report.json', report)

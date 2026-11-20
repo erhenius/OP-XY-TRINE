@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "name": "Trine",
+  "id": "m3probe",
+  "mode": "combined",
+  "sdkCommit": "28dd1a2e36599108c5eecf1a03f3b28601e50b39",
+  "machine": "m3probe",
+  "layout": {
+    "effect": 11,
+    "page": 21
+  },
+  "claims": [
+    "filter:11",
+    "save:open-xy.resonator",
+    "message:128",
+    "hook:instrument-filter-register",
+    "hook:instrument-filter-click"
+  ],
+  "patches": [
+    {
+      "path": "integration/morph-trine-sdk.patch",
+      "sha256": "ebfb176d7e8acea7706e5c8cc78e511d590dac8b0040ff7906ffe695de0907c0"
+    },
+    {
+      "path": "integration/trine-display-pages.patch",
+      "sha256": "1492c085d4c4cfa0c49120c12b358c05f9cceef23801a31a5412dc004e50bf67"
+    },
+    {
+      "path": "integration/trine-step-locks.patch",
+      "sha256": "652cfc3357dd5ddd1e9a41cd9ddb7f4b7e82ec2023a232eefa2a0e8ae777474c"
+    },
+    {
+      "path": "integration/target-runtime.patch",
+      "sha256": "602f048bc12f9ed026dbc94294455381a68b0ab0ed096d6a226bab9ff99de536"
+    }
+  ],
+  "repository": "https://github.com/erhenius/OP-XY-TRINE"
+}
