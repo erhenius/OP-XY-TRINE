@@ -1,0 +1,66 @@
+diff --git a/sdk/platform/opxy-1.2.1/m3_probe.cpp.in b/sdk/platform/opxy-1.2.1/m3_probe.cpp.in
+index 2e59376..799a03c 100644
+--- a/sdk/platform/opxy-1.2.1/m3_probe.cpp.in
++++ b/sdk/platform/opxy-1.2.1/m3_probe.cpp.in
+@@ -1,6 +1,7 @@
+ // OS 1.2.1 instrument resonator. The stock filter registrar populates
+ // the per-voice factory table and its name map, independently of send FX.
+ #include "registration.hpp"
++#include "filter_track_insert.hpp"
+ // The FX build carrier has no separate authored source-unit slot.
+ #include "resonator.cpp"
+ 
+@@ -120,6 +121,44 @@ void* resonator_factory(u32 index, u32 track) {
+     return object;
+ }
+ 
++struct DrumInsert {
++    m3_resonator::Voice voice;
++    m3_resonator::Excitation excitation;
++    m3_resonator::Coefficients coefficients;
++    u32 track;
++    u32 previous_engine;
++
++    void reset(u32 slot) {
++        m3_resonator::reset(voice);
++        excitation = {};
++        coefficients = {};
++        track = slot;
++        previous_engine = ~u32(0);
++    }
++
++    void stereo(i32* block, const i32* record, i32 key) {
++        if (!block || !record) return;
++        // A live preview may render before the first track reset.
++        if (track >= 8) {
++            const Address offset = reinterpret_cast<Address>(record) - 0x84eab39c;
++            if (offset >= 8 * 0xe8 || offset % 0xe8) return;
++            track = offset / 0xe8;
++        }
++        const u32 engine = at<const volatile u32>(0x11b01d48)[track];
++        if (engine != previous_engine) {
++            if (previous_engine != ~u32(0)) reset(track);
++            previous_engine = engine;
++        }
++        // Stock kit engines 3 and 4 have no per-voice filter. Open-XY
++        // synthesis kits run Trine with each pad's key in drum_voice.cpp.
++        if (engine != 3 && engine != 4) return;
++        m3_resonator::perform(voice, coefficients, read_controls(record), block, excitation,
++                              m3_resonator::unpack(m3_ui::audio[track]), true,
++                              m3_resonator::played_note(key));
++    }
++};
++using TrackInsert = opxy::platform::FilterTrackInsert<DrumInsert>;
++
+ const char kFilterName[] = "trine";
+ }
+ 
+@@ -134,7 +173,7 @@ int m3probe_ready() {
+ 
+ int m3probe_fx_register() {
+     if (probe_id() != kProbeId) return 0;
+-    const Record record = {m3probe_fx_factory, m3probe_fx_parameter_name, kFilterName,
++    const Record record = {reinterpret_cast<const char*>(&TrackInsert::construct), m3probe_fx_parameter_name, kFilterName,
+                            m3probe_fx_id, at<const char>(kInstrumentFilterPage), 0};
+     return sdk_register_effect(&record) > 0;
+ }

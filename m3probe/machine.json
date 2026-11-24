@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "sdk": "1.16",
+  "sdk": "1.17",
   "kind": "effect",
   "description": "Trine instrument M3 filter with three note-following bands",
   "dryLevel": 1

@@ -29,9 +29,9 @@ You need Git, Python 3.11 or newer, the Open-XY Blackfin toolchain, and an exact
 
 ### Build with TE Builder
 
-In TE Builder 0.5.4, import this repository's Git URL or the [packaged Trine ZIP](release/Trine-sdk-v0.0.7-rc2.zip). Select **Trine** version `sdk-v0.0.7-rc2`. To build alongside Morph, select **Morph-gui2d22**. Both recipes use the same Open-XY v0.0.7 SDK and shared patches. Trine’s bundle also reserves its two display pages at build time based on the selected machines and carries its step-lock integration.
+In TE Builder, import this repository’s Git URL or the [Trine machine ZIP](release/Trine-sdk-1.17-rc4.zip). Select **Trine sdk-1.17-rc4**. This release uses Open-XY API 1.17 at commit `ca122f4`.
 
-Run `python3 package_manager.py Trine-sdk-v0.0.7-rc2.zip` to generate the import bundle. Run the same command with `--check` to verify its source and patch files. Use the corresponding older Trine bundle for jobs saved with the older SDK.
+Run `python3 package_manager.py release/Trine-sdk-1.17-rc4.zip --check` to verify that the ZIP matches the checkout. Omit `--check` to rebuild the ZIP.
 
 ### Prepare the SDK
 
@@ -39,11 +39,11 @@ Run these commands from your Trine checkout on Apple silicon macOS. Use `py -3` 
 
 ```sh
 git clone https://github.com/etcetc000/open-xy.git ../open-xy-sdk
-git -C ../open-xy-sdk checkout --detach 28dd1a2e36599108c5eecf1a03f3b28601e50b39
+git -C ../open-xy-sdk checkout --detach ca122f4062f08f13a3023904620a4c35ff9b4a45
 python3 ../open-xy-sdk/sdk.py toolchain fetch
 ```
 
-If you already have a prepared SDK, use its path in the build command. Trine applies its patch to a temporary checkout at the pinned revision. The prepared SDK stays intact. Pass `--tools` to use a toolchain bundle in a different location.
+If you already have a prepared SDK, use its path in the build command. Trine applies its integration patches to a temporary checkout at the pinned revision. The prepared SDK stays intact. Pass `--tools` to use a toolchain bundle in a different location.
 
 ### Run the build
 
@@ -65,7 +65,7 @@ python3 ../open-xy-sdk/sdk.py device push ../trine-build-01/candidate
 
 After the transfer reports **PASS**, exit MTP. With the OP-XY on power, choose **Write OS to boot partition** and wait for **firmware written ok!** before power-cycling. Open **Shift + M3** on an instrument track and select **trine**.
 
-The owner confirmed this combined build with Morph gui2d22 on hardware using TE Builder 0.5.4 and Open-XY v0.0.7.
+Trine RC4 and Septet 0.1.2 passed a hardware check together on an OP-XY. On Drumline and a second drum machine, the picker stayed responsive while previewing each filter, playing a note and switching away.
 
 ## Hardware check
 
@@ -77,6 +77,6 @@ Sweep cutoff and resonance together across the range. Check the badge at both en
 Trine builds against the [Open-XY SDK][sdk]. The patch modifies SDK code covered by the upstream MIT notice in [LICENSE-OPEN-XY](LICENSE-OPEN-XY).
 
 [sdk]: https://github.com/etcetc000/open-xy
-[build]: https://github.com/etcetc000/open-xy/blob/28dd1a2e36599108c5eecf1a03f3b28601e50b39/docs/build.md#2-copy-the-os-from-your-op-xy
-[linux]: https://github.com/etcetc000/open-xy/blob/28dd1a2e36599108c5eecf1a03f3b28601e50b39/docs/build.md#on-linux
-[install]: https://github.com/etcetc000/open-xy/blob/28dd1a2e36599108c5eecf1a03f3b28601e50b39/docs/build.md#5-install
+[build]: https://github.com/etcetc000/open-xy/blob/ca122f4062f08f13a3023904620a4c35ff9b4a45/docs/build.md#2-copy-the-os-from-your-op-xy
+[linux]: https://github.com/etcetc000/open-xy/blob/ca122f4062f08f13a3023904620a4c35ff9b4a45/docs/build.md#on-linux
+[install]: https://github.com/etcetc000/open-xy/blob/ca122f4062f08f13a3023904620a4c35ff9b4a45/docs/build.md#5-install

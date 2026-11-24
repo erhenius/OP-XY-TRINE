@@ -73,10 +73,10 @@ require(menu == dict(before, filter_types=before['filter_types'] + expected), 'W
 with tempfile.TemporaryDirectory() as tmp:
     unit = adapters.generate_registration(tmp, items[0]).read_text()
     carrier = adapters.generate_fx_object(tmp, items[0]).read_text()
-    require('sdk_register_effect(&record)' in unit and 'm3probe_fx_factory' in unit and
+    require('sdk_register_effect(&record)' in unit and '&TrackInsert::construct' in unit and
             'kInstrumentFilterPage = 3' in unit and 'return 0x7fffffff;' in carrier and
             items[0].dry_parameter is None and items[0].dry_level == 0x7fffffff,
-            'Missing unity-dry FX compatibility registration')
+            'Missing stereo track insert or unity dry level')
     require('"trine"' in unit and 'm3_resonator::perform' in unit and
             'm3_setup_ui.hpp' in unit and 'm3probe_filter_init' in unit, 'Missing M3 adapter')
     require(all('content/display/' + asset in assets for asset in ('m3_main.svg','m3_setup.svg')),

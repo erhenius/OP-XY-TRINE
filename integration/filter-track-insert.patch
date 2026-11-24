@@ -1,0 +1,52 @@
+diff --git a/sdk/platform/opxy-1.2.1/filter_track_insert.hpp b/sdk/platform/opxy-1.2.1/filter_track_insert.hpp
+new file mode 100644
+index 0000000..c9a0596
+--- /dev/null
++++ b/sdk/platform/opxy-1.2.1/filter_track_insert.hpp
+@@ -0,0 +1,46 @@
++// OS 1.2.1 constructs a track insert in its 480-byte FX slot. The drum
++// mixer calls slots 6 and 3 even when a picker selection is just a preview.
++#pragma once
++#include <opxy/effect.hpp>
++
++namespace opxy { namespace platform {
++template<class Processor>
++struct FilterTrackInsert {
++    using Object = FilterTrackInsert<Processor>;
++    using Process = void (*)(Object*, i32*, const i32*, i32, i32);
++    struct Methods {
++        Object* (*release)(Object*);
++        Object* (*destroy)(Object*);
++        Process mono;
++        Process stereo;
++        void (*send)(Object*, i32*, i32*, const i32*);
++        void (*reset)(Object*, u32);
++        int (*interlaced)(Object*);
++        i32 (*dry)(Object*, const i32*);
++    };
++    const Methods* methods;
++    Processor processor;
++
++    static Object* release(Object* self) { return self; }
++    static void mono(Object*, i32*, const i32*, i32, i32) {}
++    static void stereo(Object* self, i32* block, const i32* record, i32 key, i32) {
++        self->processor.stereo(block, record, key);
++    }
++    static void send(Object*, i32*, i32*, const i32*) {}
++    static void reset(Object* self, u32 slot) { self->processor.reset(slot); }
++    static int interlaced(Object*) { return 1; }
++    static i32 dry(Object*, const i32*) { return 0x7fffffff; }
++    static Object* construct(void* storage) {
++        static_assert(sizeof(Object) <= 480, "Track insert exceeds the stock FX slot");
++        static_assert(sizeof(Methods) == 8 * sizeof(void*), "Track insert ABI mismatch");
++        static_assert(__builtin_offsetof(Methods, stereo) == 3 * sizeof(void*), "Stereo slot");
++        static_assert(__builtin_offsetof(Methods, interlaced) == 6 * sizeof(void*), "Interlaced slot");
++        static const Methods table = {release, release, mono, stereo, send, reset, interlaced, dry};
++        if (!storage) return nullptr;
++        auto self = static_cast<Object*>(storage);
++        self->methods = &table;
++        self->processor.reset(8);  // No track assigned until the stock reset.
++        return self;
++    }
++};
++}}

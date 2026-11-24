@@ -1,11 +1,12 @@
 """Build the M3 Trine filter with a local OP-XY toolchain."""
 import argparse
+import hashlib
+import json
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 
-REV = '28dd1a2e36599108c5eecf1a03f3b28601e50b39'
 HERE = Path(__file__).resolve().parent
 
 
@@ -20,6 +21,8 @@ def main():
     parser.add_argument('--out', required=True, type=Path, help='fresh build directory')
     parser.add_argument('--stock-os', type=Path, help='local stock OS 1.2.1; omit for module-only compile')
     args = parser.parse_args()
+    recipe = json.loads((HERE/'machine-bundle.json').read_bytes())
+    revision = recipe['sdkCommit']
     prepared = args.sdk.resolve()
     tools = (args.tools or prepared/'local/toolchain').resolve()
     out = args.out.resolve()
@@ -31,13 +34,16 @@ def main():
         parser.error('--stock-os must name your local stock os.ldr')
     with tempfile.TemporaryDirectory(prefix='opxy-m3-') as temporary:
         sdk = Path(temporary)/'sdk'
-        local_ref = subprocess.run(['git','-C',str(prepared),'cat-file','-e',REV+'^{commit}'],
+        local_ref = subprocess.run(['git','-C',str(prepared),'cat-file','-e',revision+'^{commit}'],
                                    capture_output=True).returncode == 0
         origin = prepared if local_ref else 'https://github.com/etcetc000/open-xy.git'
         run('git','clone','--no-checkout',origin,sdk)
-        run('git','checkout','--detach',REV,cwd=sdk)
-        run('git','apply','--check',HERE/'instrument-m3.patch',cwd=sdk)
-        run('git','apply',HERE/'instrument-m3.patch',cwd=sdk)
+        run('git','checkout','--detach',revision,cwd=sdk)
+        for patch in recipe['patches']:
+            path = HERE/patch['path']
+            if hashlib.sha256(path.read_bytes()).hexdigest() != patch['sha256']:
+                parser.error('Patch checksum mismatch for ' + path.name)
+            run('git','apply','--whitespace=nowarn',path,cwd=sdk)
         if args.stock_os:
             sys.path.insert(0, str(sdk))
             from copy_sites import prepare

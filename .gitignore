@@ -13,3 +13,4 @@ candidate/
 *.oxy
 *.zip
 !release/Trine-sdk-v0.0.7-rc2.zip
+!release/Trine-sdk-1.17-rc4.zip

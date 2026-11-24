@@ -3,7 +3,7 @@
   "name": "Trine",
   "id": "m3probe",
   "mode": "combined",
-  "sdkCommit": "28dd1a2e36599108c5eecf1a03f3b28601e50b39",
+  "sdkCommit": "ca122f4062f08f13a3023904620a4c35ff9b4a45",
   "machine": "m3probe",
   "layout": {
     "effect": 11,
@@ -32,6 +32,14 @@
     {
       "path": "integration/target-runtime.patch",
       "sha256": "602f048bc12f9ed026dbc94294455381a68b0ab0ed096d6a226bab9ff99de536"
+    },
+    {
+      "path": "integration/filter-track-insert.patch",
+      "sha256": "40a0da1aced89ccccd213021a02db9f648c66fb00292cafe1c261fe08ce9388e"
+    },
+    {
+      "path": "integration/trine-drum-insert.patch",
+      "sha256": "570afdcfde7309b09f6925acfc4940f297def51eecf5ac98909c2efbfa13e36c"
     }
   ],
   "repository": "https://github.com/erhenius/OP-XY-TRINE"
